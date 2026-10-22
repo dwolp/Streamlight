@@ -4,6 +4,13 @@ Streamlight is a self-hosted desktop stream host for [Artemis (Moonlight Noir)](
 
 It is a personal fork of [Apollo](https://github.com/ClassicOldSong/Apollo), which is itself based on Sunshine.
 
+> [!WARNING]
+> This fork was made with the help of Claude (Anthropic). The changes have not been quality checked by a human. Use it carefully, and review it before relying on it.
+
+## Contributions
+
+This fork is maintained for personal use. Contributions are not accepted.
+
 ## Features
 
 - Built-in virtual display with HDR support that matches your client's resolution and framerate
