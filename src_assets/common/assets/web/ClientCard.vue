@@ -1,13 +1,12 @@
 <template>
-    <div class="card p-2">
+    <div class="card h-100">
         <div class="card-body">
             <h2>{{ $t('client_card.clients') }}</h2>
-            <br>
-            <p>{{ $t('client_card.clients_desc') }}</p>
-            <div class="card-group p-4 align-items-center">
-                <a v-for="{ platform, icon, name, link } of clients" class="btn m-1" :class="[link && 'btn-success' || 'btn-secondary']" :href="link" target="_blank" @click="shouldOpen($event, link)"><i v-if="icon" :class="icon"></i> <span class="platform-text">{{ platform }}</span> [ {{ name }} ] </a>
+            <p class="text-body-secondary">{{ $t('client_card.clients_desc') }}</p>
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+                <a v-for="{ platform, icon, name, link } of clients" class="btn" :class="[link && 'btn-success' || 'btn-secondary']" :href="link" target="_blank" @click="shouldOpen($event, link)"><i v-if="icon" :class="icon"></i> <span class="platform-text">{{ platform }}</span> [ {{ name }} ] </a>
             </div>
-            <i>* {{ $t('client_card.generic_moonlight_clients_desc') }}</i>
+            <i class="d-block mt-3 small text-body-secondary">* {{ $t('client_card.generic_moonlight_clients_desc') }}</i>
         </div>
     </div>
 </template>

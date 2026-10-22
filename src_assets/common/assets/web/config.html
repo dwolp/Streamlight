@@ -5,9 +5,11 @@
   <%- header %>
     <style>
       .config-page {
-        padding: 1em;
-        border: 1px solid #dee2e6;
-        border-top: none;
+        padding: 1.25rem 1.4rem;
+        border: 1px solid var(--sl-border);
+        border-radius: var(--sl-radius);
+        background: var(--sl-surface);
+        box-shadow: var(--sl-shadow);
       }
 
       .pre-wrap {
@@ -15,15 +17,26 @@
       }
 
       .buttons {
-        padding: 1em 0;
+        position: sticky;
+        bottom: 0;
+        z-index: 5;
+        display: flex;
+        justify-content: flex-end;
+        align-items: center;
+        gap: 0.5rem;
+        margin-top: 1rem;
+        padding: 0.75rem 0;
+        border-top: 1px solid var(--sl-border);
+        background: var(--bs-body-bg);
       }
     </style>
 </head>
 
 <body id="app" v-cloak>
+  <link href="./assets/css/apollo.css" rel="stylesheet" />
   <Navbar></Navbar>
   <div class="container">
-    <h1 class="my-4">{{ $t('config.configuration') }}</h1>
+    <h1 class="page-header mt-4 mb-3">{{ $t('config.configuration') }}</h1>
     <div class="form" v-if="config">
       <!-- Header -->
       <ul class="nav nav-tabs">
@@ -94,9 +107,13 @@
     <div class="alert alert-success my-4" v-if="restarted">
       <b>{{ $t('_common.success') }}</b> {{ $t('config.restart_note') }}
     </div>
-    <div class="mb-3 buttons">
-      <button class="btn btn-primary" @click="save">{{ $t('_common.save') }}</button>
-      <button class="btn btn-success mx-2" @click="apply" v-if="saved && !restarted">{{ $t('_common.apply') }}</button>
+    <div class="buttons">
+      <button class="btn btn-success" @click="apply" v-if="saved && !restarted">
+        <i class="fas fa-check"></i> {{ $t('_common.apply') }}
+      </button>
+      <button class="btn btn-primary" @click="save">
+        <i class="fas fa-floppy-disk"></i> {{ $t('_common.save') }}
+      </button>
     </div>
   </div>
 </body>

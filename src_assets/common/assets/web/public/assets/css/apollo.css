@@ -1,4 +1,337 @@
-/* Hide pages while localization is loading */
+/* Design tokens. Light values live on :root, dark values are repeated for both
+   the explicit dark theme and the auto theme resolved to dark. */
+:root {
+    --sl-accent: #7c3aed;
+    --sl-accent-strong: #6d28d9;
+    --sl-accent-soft: rgba(124, 58, 237, 0.1);
+    --sl-accent-ring: rgba(124, 58, 237, 0.25);
+    --sl-nav-from: #4c1d95;
+    --sl-nav-to: #7c3aed;
+    --sl-surface: #ffffff;
+    --sl-surface-muted: #f6f5fa;
+    --sl-border: rgba(20, 16, 40, 0.09);
+    --sl-shadow: 0 1px 2px rgba(20, 16, 40, 0.04), 0 8px 24px -12px rgba(20, 16, 40, 0.12);
+    --sl-radius: 14px;
+    --sl-radius-sm: 10px;
+
+    --bs-primary: var(--sl-accent);
+    --bs-primary-rgb: 124, 58, 237;
+    --bs-link-color: var(--sl-accent);
+    --bs-link-color-rgb: 124, 58, 237;
+    --bs-link-hover-color: var(--sl-accent-strong);
+    --bs-body-bg: #f4f3f9;
+    --bs-body-font-size: 0.95rem;
+    --bs-border-radius: var(--sl-radius-sm);
+    --bs-border-radius-lg: var(--sl-radius);
+    --bs-card-border-radius: var(--sl-radius);
+    --bs-card-border-color: var(--sl-border);
+    --bs-card-bg: var(--sl-surface);
+    --bs-card-cap-bg: var(--sl-surface-muted);
+    --bs-border-color: var(--sl-border);
+}
+
+[data-bs-theme=dark] {
+    --sl-accent: #a78bfa;
+    --sl-accent-strong: #c4b5fd;
+    --sl-accent-soft: rgba(167, 139, 250, 0.14);
+    --sl-accent-ring: rgba(167, 139, 250, 0.3);
+    --sl-nav-from: #1c1135;
+    --sl-nav-to: #3b1f7a;
+    --sl-surface: #171429;
+    --sl-surface-muted: #1d1936;
+    --sl-border: rgba(255, 255, 255, 0.08);
+    --sl-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 30px -14px rgba(0, 0, 0, 0.6);
+
+    --bs-primary: var(--sl-accent);
+    --bs-primary-rgb: 167, 139, 250;
+    --bs-link-color: var(--sl-accent);
+    --bs-link-color-rgb: 167, 139, 250;
+    --bs-link-hover-color: var(--sl-accent-strong);
+    --bs-body-bg: #0d0b18;
+    --bs-card-bg: var(--sl-surface);
+    --bs-card-cap-bg: var(--sl-surface-muted);
+    --bs-border-color: var(--sl-border);
+}
+
+body {
+    background-image: radial-gradient(1100px 420px at 90% -120px, var(--sl-accent-soft), transparent 70%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "cv11", "ss01";
+}
+
+/* Typography */
+h1, .h1 {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+}
+
+h2, .h2 {
+    font-size: 1.25rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+h3, .h3 {
+    font-size: 1.05rem;
+    font-weight: 600;
+}
+
+.container {
+    max-width: 1200px;
+}
+
+/* Grid columns must be able to shrink below their content, e.g. long <pre> lines */
+.row > * {
+    min-width: 0;
+}
+
+/* Cards */
+.card {
+    box-shadow: var(--sl-shadow);
+}
+
+.card-body {
+    padding: 1.25rem 1.4rem;
+}
+
+.card-body br {
+    display: none;
+}
+
+/* Buttons */
+.btn {
+    font-weight: 500;
+    border-radius: var(--sl-radius-sm);
+    padding: 0.4rem 0.9rem;
+    transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+}
+
+.btn:active {
+    transform: translateY(1px);
+}
+
+.btn-sm {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.85rem;
+}
+
+.btn-primary {
+    --bs-btn-color: #fff;
+    --bs-btn-bg: var(--sl-accent);
+    --bs-btn-border-color: var(--sl-accent);
+    --bs-btn-hover-color: #fff;
+    --bs-btn-hover-bg: var(--sl-accent-strong);
+    --bs-btn-hover-border-color: var(--sl-accent-strong);
+    --bs-btn-active-bg: var(--sl-accent-strong);
+    --bs-btn-active-border-color: var(--sl-accent-strong);
+    --bs-btn-disabled-bg: var(--sl-accent);
+    --bs-btn-disabled-border-color: var(--sl-accent);
+    --bs-btn-focus-shadow-rgb: 124, 58, 237;
+    box-shadow: 0 6px 16px -8px var(--sl-accent);
+}
+
+.btn-success {
+    --bs-btn-bg: #10b981;
+    --bs-btn-border-color: #10b981;
+    --bs-btn-hover-bg: #0ea271;
+    --bs-btn-hover-border-color: #0ea271;
+    --bs-btn-active-bg: #0ea271;
+    --bs-btn-active-border-color: #0ea271;
+    --bs-btn-disabled-bg: #10b981;
+    --bs-btn-disabled-border-color: #10b981;
+    --bs-btn-focus-shadow-rgb: 16, 185, 129;
+}
+
+.btn-secondary {
+    --bs-btn-bg: rgba(20, 16, 40, 0.06);
+    --bs-btn-border-color: transparent;
+    --bs-btn-color: var(--bs-body-color);
+    --bs-btn-hover-bg: rgba(20, 16, 40, 0.11);
+    --bs-btn-hover-border-color: transparent;
+    --bs-btn-hover-color: var(--bs-body-color);
+    --bs-btn-active-bg: rgba(20, 16, 40, 0.14);
+    --bs-btn-active-border-color: transparent;
+    --bs-btn-active-color: var(--bs-body-color);
+    --bs-btn-disabled-bg: rgba(20, 16, 40, 0.06);
+    --bs-btn-disabled-border-color: transparent;
+    --bs-btn-disabled-color: var(--bs-body-color);
+}
+
+[data-bs-theme=dark] .btn-secondary {
+    --bs-btn-bg: rgba(255, 255, 255, 0.07);
+    --bs-btn-hover-bg: rgba(255, 255, 255, 0.12);
+    --bs-btn-active-bg: rgba(255, 255, 255, 0.16);
+    --bs-btn-disabled-bg: rgba(255, 255, 255, 0.07);
+}
+
+.btn-danger {
+    --bs-btn-bg: #ef4444;
+    --bs-btn-border-color: #ef4444;
+    --bs-btn-hover-bg: #dc2626;
+    --bs-btn-hover-border-color: #dc2626;
+    --bs-btn-active-bg: #dc2626;
+    --bs-btn-active-border-color: #dc2626;
+    --bs-btn-disabled-bg: #ef4444;
+    --bs-btn-disabled-border-color: #ef4444;
+}
+
+.btn-warning {
+    --bs-btn-bg: #f59e0b;
+    --bs-btn-border-color: #f59e0b;
+    --bs-btn-hover-bg: #d98a06;
+    --bs-btn-hover-border-color: #d98a06;
+    --bs-btn-active-bg: #d98a06;
+    --bs-btn-active-border-color: #d98a06;
+    --bs-btn-disabled-bg: #f59e0b;
+    --bs-btn-disabled-border-color: #f59e0b;
+}
+
+/* Forms */
+.form-control,
+.form-select {
+    border-radius: var(--sl-radius-sm);
+    border-color: var(--sl-border);
+    background-color: var(--sl-surface-muted);
+    padding: 0.5rem 0.75rem;
+}
+
+.form-control:focus,
+.form-select:focus {
+    border-color: var(--sl-accent);
+    box-shadow: 0 0 0 0.2rem var(--sl-accent-ring);
+    background-color: var(--sl-surface);
+}
+
+.form-label {
+    font-weight: 550;
+    font-size: 0.9rem;
+    margin-bottom: 0.3rem;
+}
+
+.form-text {
+    font-size: 0.82rem;
+}
+
+.form-check-input {
+    border-color: rgba(20, 16, 40, 0.25);
+}
+
+.form-check-input:checked {
+    background-color: var(--sl-accent);
+    border-color: var(--sl-accent);
+}
+
+.form-check-input:focus {
+    border-color: var(--sl-accent);
+    box-shadow: 0 0 0 0.2rem var(--sl-accent-ring);
+}
+
+.form-check-input:checked:focus {
+    box-shadow: 0 0 0 0.2rem var(--sl-accent-ring);
+}
+
+/* Alerts */
+.alert {
+    border: none;
+    border-radius: var(--sl-radius-sm);
+}
+
+.nav-pills {
+    --bs-nav-pills-link-active-bg: var(--sl-accent);
+}
+
+/* Segmented tab bar: always one row; scrolls sideways only if the window is too narrow */
+.nav-tabs {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.2rem;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 0.3rem;
+    margin-bottom: 1rem;
+    border: none;
+    border-radius: 12px;
+    background: var(--sl-surface-muted);
+}
+
+.nav-tabs .nav-link {
+    flex-shrink: 0;
+    white-space: nowrap;
+    border: none;
+    border-radius: 9px;
+    padding: 0.4rem 0.6rem;
+    font-size: 0.85rem;
+    color: var(--bs-secondary-color);
+}
+
+.nav-tabs .nav-link:hover {
+    color: var(--bs-body-color);
+}
+
+.nav-tabs .nav-link.active {
+    background: var(--sl-surface);
+    color: var(--sl-accent-strong);
+    font-weight: 600;
+    box-shadow: var(--sl-shadow);
+}
+
+/* Tables */
+.table {
+    --bs-table-bg: transparent;
+    --bs-table-hover-bg: var(--sl-accent-soft);
+    --bs-table-border-color: var(--sl-border);
+    font-size: 0.93rem;
+}
+
+.table > :not(caption) > * > * {
+    padding: 0.55rem 0.75rem;
+    vertical-align: middle;
+}
+
+.table thead th {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--bs-secondary-color);
+    font-weight: 600;
+    border-bottom-width: 1px;
+}
+
+/* Scrollbar-friendly code blocks */
+pre {
+    border-radius: var(--sl-radius-sm);
+}
+
+/* Dropdowns */
+.dropdown-menu {
+    border: 1px solid var(--sl-border);
+    border-radius: var(--sl-radius-sm);
+    box-shadow: var(--sl-shadow);
+    padding: 0.35rem;
+}
+
+.dropdown-item {
+    border-radius: 7px;
+    padding: 0.4rem 0.7rem;
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus,
+.dropdown-item.active {
+    background-color: var(--sl-accent-soft);
+    color: var(--bs-body-color);
+}
+
+.dropdown-item.active {
+    color: var(--sl-accent-strong);
+    font-weight: 600;
+}
+
+/* Misc */
 [v-cloak] {
     display: none;
 }

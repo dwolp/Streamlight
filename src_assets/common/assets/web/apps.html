@@ -77,22 +77,32 @@
         }
 
         .dragover {
-          border-top: 2px solid #ffc400;
+          border-top: 2px solid var(--sl-accent);
+        }
+
+        .apps-table tbody tr[draggable="true"] {
+          cursor: grab;
+        }
+
+        .apps-table td .btn {
+          padding: 0.3rem 0.6rem;
+          font-size: 0.85rem;
         }
       </style>
 </head>
 
 <body id="app" v-cloak>
+  <link href="./assets/css/apollo.css" rel="stylesheet" />
   <Navbar></Navbar>
   <div class="container">
-    <div class="my-4" v-if="!showEditForm">
-        <h1>{{ $t('apps.applications_title') }}</h1>
-        <div>{{ $t('apps.applications_desc') }}</div>
-        <div>{{ $t('apps.applications_reorder_desc') }}</div>
-        <div class="pre-wrap">{{ $t('apps.applications_tips') }}</div>
+    <div class="page-header mt-4 mb-3" v-if="!showEditForm">
+        <h1 class="mb-1">{{ $t('apps.applications_title') }}</h1>
+        <div class="text-body-secondary small">{{ $t('apps.applications_desc') }}</div>
+        <div class="text-body-secondary small">{{ $t('apps.applications_reorder_desc') }}</div>
+        <div class="pre-wrap text-body-secondary small">{{ $t('apps.applications_tips') }}</div>
     </div>
-    <div class="my-4" v-else>
-        <h1>{{ editForm.name || "&lt; NO NAME &gt;"}}</h1>
+    <div class="page-header mt-4 mb-3" v-else>
+        <h1 class="mb-2">{{ editForm.name || "&lt; NO NAME &gt;"}}</h1>
         <div>
           <button @click="showEditForm = false" class="btn btn-secondary me-2 mt-2">
             <i class="fas fa-xmark"></i> {{ $t('_common.cancel') }}
@@ -105,8 +115,8 @@
           </button>
         </div>
     </div>
-    <div class="card p-4" v-if="!showEditForm">
-      <table class="table">
+    <div class="card p-2" v-if="!showEditForm">
+      <table class="table apps-table mb-0">
         <thead>
           <tr>
             <th scope="col">{{ $t('apps.name') }}</th>
@@ -145,14 +155,14 @@
           </tr>
         </tbody>
       </table>
-      <div class="mt-2">
+      <div class="d-flex align-items-center mt-2 px-2 pb-2">
         <button class="btn btn-primary" @click="newApp" :disabled="actionDisabled">
           <i class="fas fa-plus"></i> {{ $t('apps.add_new') }}
         </button>
-        <button class="btn btn-secondary float-end" @click="alphabetizeApps" :disabled="actionDisabled" v-if="!listReordered">
+        <button class="btn btn-secondary ms-auto" @click="alphabetizeApps" :disabled="actionDisabled" v-if="!listReordered">
           <i class="fas fa-sort-alpha-up"></i> {{ $t('apps.alphabetize') }}
         </button>
-        <button class="btn btn-warning float-end" @click="saveOrder" :disabled="actionDisabled" v-if="listReordered">
+        <button class="btn btn-warning ms-auto" @click="saveOrder" :disabled="actionDisabled" v-if="listReordered">
           <i class="fas fa-floppy-disk"></i> {{ $t('apps.save_order') }}
         </button>
       </div>
