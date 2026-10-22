@@ -221,6 +221,6 @@ namespace net {
       }
     }
 
-    return !instancename.empty() ? instancename : "Streamshine";
+    return !instancename.empty() ? instancename : "Streamlight";
   }
 }  // namespace net

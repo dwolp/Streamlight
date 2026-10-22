@@ -1,8 +1,8 @@
 <template>
   <nav class="navbar navbar-light navbar-expand-lg navbar-background header">
     <div class="container">
-      <a class="navbar-brand" href="./" title="Streamshine">
-        <img src="/images/logo-apollo-45.png" height="45" alt="Streamshine">
+      <a class="navbar-brand" href="./" title="Streamlight">
+        <img src="/images/logo-apollo-45.png" height="45" alt="Streamlight">
       </a>
       <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
               aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">

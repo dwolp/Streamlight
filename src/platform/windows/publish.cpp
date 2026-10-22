@@ -174,21 +174,21 @@ namespace platf::publish {
     mdns_registration_t():
         existing_instance(nullptr) {
       if (service(true, existing_instance)) {
-        BOOST_LOG(error) << "Unable to register Streamshine mDNS service"sv;
+        BOOST_LOG(error) << "Unable to register Streamlight mDNS service"sv;
         return;
       }
 
-      BOOST_LOG(info) << "Registered Streamshine mDNS service"sv;
+      BOOST_LOG(info) << "Registered Streamlight mDNS service"sv;
     }
 
     ~mdns_registration_t() override {
       if (existing_instance) {
         if (service(false, existing_instance)) {
-          BOOST_LOG(error) << "Unable to unregister Streamshine mDNS service"sv;
+          BOOST_LOG(error) << "Unable to unregister Streamlight mDNS service"sv;
           return;
         }
 
-        BOOST_LOG(info) << "Unregistered Streamshine mDNS service"sv;
+        BOOST_LOG(info) << "Unregistered Streamlight mDNS service"sv;
       }
     }
 
