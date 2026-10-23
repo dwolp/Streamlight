@@ -32,6 +32,7 @@
 #include "file_handler.h"
 #include "globals.h"
 #include "httpcommon.h"
+#include "input.h"
 #include "logging.h"
 #include "network.h"
 #include "nvhttp.h"
@@ -990,6 +991,72 @@ namespace confighttp {
   }
 
   /**
+   * @brief Get the input status: which gamepad types can be emulated, and which gamepads are connected.
+   * @param response The HTTP response object.
+   * @param request The HTTP request object.
+   *
+   * @api_examples{/api/input/status| GET| null}
+   */
+  void getInputStatus(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) {
+      return;
+    }
+
+    print_req(request);
+
+    nlohmann::json output_tree;
+    output_tree["status"] = true;
+    output_tree["platform"] = SUNSHINE_PLATFORM;
+
+    nlohmann::json backends = nlohmann::json::array();
+    for (const auto &gamepad : input::gamepad_backends()) {
+      backends.push_back({
+        {"name", gamepad.name},
+        {"available", gamepad.is_enabled},
+        {"reason", gamepad.reason_disabled},
+      });
+    }
+    output_tree["backends"] = backends;
+
+    nlohmann::json gamepads = nlohmann::json::array();
+    for (const auto &gamepad : input::gamepad_status()) {
+      std::string_view client_type;
+      switch (gamepad.client_type) {
+        case LI_CTYPE_XBOX:
+          client_type = "xbox";
+          break;
+        case LI_CTYPE_PS:
+          client_type = "playstation";
+          break;
+        case LI_CTYPE_NINTENDO:
+          client_type = "nintendo";
+          break;
+        default:
+          client_type = "unknown";
+          break;
+      }
+
+      const auto caps = gamepad.capabilities;
+      gamepads.push_back({
+        {"index", gamepad.index},
+        {"client_index", gamepad.client_index},
+        {"client_type", client_type},
+        {"emulated", gamepad.emulated},
+        {"analog_triggers", (caps & LI_CCAP_ANALOG_TRIGGERS) != 0},
+        {"rumble", (caps & LI_CCAP_RUMBLE) != 0},
+        {"trigger_rumble", (caps & LI_CCAP_TRIGGER_RUMBLE) != 0},
+        {"touchpad", (caps & LI_CCAP_TOUCHPAD) != 0},
+        {"motion", (caps & (LI_CCAP_ACCEL | LI_CCAP_GYRO)) != 0},
+        {"battery", (caps & LI_CCAP_BATTERY_STATE) != 0},
+        {"rgb_led", (caps & LI_CCAP_RGB_LED) != 0},
+      });
+    }
+    output_tree["gamepads"] = gamepads;
+
+    send_response(response, output_tree);
+  }
+
+  /**
    * @brief Get the configuration settings.
    * @param response The HTTP response object.
    * @param request The HTTP request object.
@@ -1541,6 +1608,7 @@ namespace confighttp {
     server.resource["^/api/apps/close$"]["POST"] = closeApp;
     server.resource["^/api/logs$"]["GET"] = getLogs;
     server.resource["^/api/config$"]["GET"] = getConfig;
+    server.resource["^/api/input/status$"]["GET"] = getInputStatus;
     server.resource["^/api/config$"]["POST"] = saveConfig;
     server.resource["^/api/configLocale$"]["GET"] = getLocale;
     server.resource["^/api/restart$"]["POST"] = restart;

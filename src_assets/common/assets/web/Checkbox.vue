@@ -106,11 +106,8 @@ const defValue = parsedDefaultPropValue ? "_common.enabled_def_cbox" : "_common.
 
 <template>
   <div :class="extendedClassStr">
-    <label :for="props.id" :class="`form-check-label${showDesc ? ' mb-2' : ''}`">
+    <label :for="props.id" class="form-check-label">
       {{ $t(labelField) }}
-      <div class="mt-0 form-text" v-if="showDefValue">
-        {{ $t(defValue) }}
-      </div>
     </label>
     <input type="checkbox"
            class="form-check-input"
@@ -118,9 +115,24 @@ const defValue = parsedDefaultPropValue ? "_common.enabled_def_cbox" : "_common.
            v-model="model"
            :true-value="checkboxValues.truthy"
            :false-value="checkboxValues.falsy" />
-    <div class="form-text" v-if="showDesc">
-      {{ $t(descField) }}
-      <slot></slot>
+    <!-- Description and default value share one line under the label -->
+    <div class="form-text mt-0" v-if="showDesc || showDefValue">
+      <template v-if="showDesc">
+        {{ $t(descField) }}
+        <slot></slot>
+      </template>
+      <span class="default-hint" :class="{ separated: showDesc }" v-if="showDefValue">{{ $t(defValue) }}</span>
     </div>
   </div>
 </template>
+
+<style scoped>
+.default-hint {
+  white-space: nowrap;
+  opacity: 0.75;
+}
+
+.default-hint.separated::before {
+  content: "\00b7\00a0";
+}
+</style>

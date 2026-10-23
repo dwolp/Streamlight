@@ -89,6 +89,25 @@ namespace platf {
     platf::gamepad::free(raw, nr);
   }
 
+  std::string_view gamepad_emulated_type(input_t &input, int nr) {
+    auto raw = (input_raw_t *) input.get();
+    if (nr < 0 || nr >= (int) raw->gamepads.size() || !raw->gamepads[nr] || !raw->gamepads[nr]->joypad) {
+      return {};
+    }
+
+    // Order of joypads_t: XboxOneJoypad, SwitchJoypad, PS5Joypad
+    switch (raw->gamepads[nr]->joypad->index()) {
+      case 0:
+        return std::string_view {"xone"};
+      case 1:
+        return std::string_view {"switch"};
+      case 2:
+        return std::string_view {"ds5"};
+      default:
+        return {};
+    }
+  }
+
   void gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
     auto raw = (input_raw_t *) input.get();
     platf::gamepad::update(raw, nr, gamepad_state);

@@ -21,5 +21,9 @@ if not exist "%OUT%" mkdir "%OUT%"
 cl /nologo /W4 /WX /Fo"%OUT%\\" /Fe"%OUT%\protocol_test.exe" ^
     "%HERE%protocol_test.c" "%HERE%..\switch_pro_protocol.c" || exit /b 1
 
+rem Driver control tool; needs the installed driver, so it is built but not run here.
+cl /nologo /W4 /WX /Fo"%OUT%\\" /Fe"%OUT%\pad_control.exe" ^
+    "%HERE%pad_control.c" setupapi.lib || exit /b 1
+
 "%OUT%\protocol_test.exe"
 endlocal & exit /b %ERRORLEVEL%

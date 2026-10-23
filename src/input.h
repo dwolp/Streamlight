@@ -23,6 +23,27 @@ namespace input {
 
   bool probe_gamepads();
 
+  /**
+   * @brief A connected gamepad, for showing input status in the web UI.
+   */
+  struct gamepad_status_t {
+    int index;  ///< Global gamepad slot on the host.
+    std::uint8_t client_index;  ///< Controller number on the client.
+    std::uint8_t client_type;  ///< Controller type reported by the client (`LI_CTYPE_*`).
+    std::uint16_t capabilities;  ///< Capabilities reported by the client (`LI_CCAP_*`).
+    std::string emulated;  ///< Emulated gamepad type, as listed by `platf::supported_gamepads()`; empty if none.
+  };
+
+  /**
+   * @brief Lists the gamepads that are currently connected.
+   */
+  std::vector<gamepad_status_t> gamepad_status();
+
+  /**
+   * @brief Lists the gamepad types this host can emulate and whether each is available.
+   */
+  std::vector<platf::supported_gamepad_t> gamepad_backends();
+
   std::shared_ptr<input_t> alloc(safe::mail_t mail);
 
   struct touch_port_t: public platf::touch_port_t {

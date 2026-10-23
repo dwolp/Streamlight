@@ -9,10 +9,13 @@ extern "C" {
 }
 
 // standard includes
+#include <array>
 #include <bitset>
 #include <chrono>
 #include <cmath>
 #include <list>
+#include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -115,11 +118,51 @@ namespace input {
   static platf::input_t platf_input;
   static std::bitset<platf::MAX_GAMEPADS> gamepadMask {};
 
+  // What is connected in each gamepad slot, for the web UI's input status. Written where gamepads
+  // are allocated and freed; read by the web server.
+  static std::mutex gamepad_status_mutex;
+  static std::array<std::optional<gamepad_status_t>, platf::MAX_GAMEPADS> gamepad_status_slots;
+
+  /**
+   * @brief Records a newly allocated gamepad for the input status.
+   * @param id The global gamepad slot.
+   * @param client_index The controller number on the client.
+   * @param arrival What the client reported about the controller.
+   */
+  static void record_gamepad(int id, std::uint8_t client_index, const platf::gamepad_arrival_t &arrival) {
+    gamepad_status_t status {id, client_index, arrival.type, arrival.capabilities, std::string {platf::gamepad_emulated_type(platf_input, id)}};
+
+    std::lock_guard lock {gamepad_status_mutex};
+    gamepad_status_slots[id] = std::move(status);
+  }
+
   void free_gamepad(platf::input_t &platf_input, int id) {
     platf::gamepad_update(platf_input, id, platf::gamepad_state_t {});
     platf::free_gamepad(platf_input, id);
 
+    {
+      std::lock_guard lock {gamepad_status_mutex};
+      gamepad_status_slots[id].reset();
+    }
+
     free_id(gamepadMask, id);
+  }
+
+  std::vector<gamepad_status_t> gamepad_status() {
+    std::vector<gamepad_status_t> result;
+
+    std::lock_guard lock {gamepad_status_mutex};
+    for (auto &slot : gamepad_status_slots) {
+      if (slot) {
+        result.push_back(*slot);
+      }
+    }
+    return result;
+  }
+
+  std::vector<platf::supported_gamepad_t> gamepad_backends() {
+    // Same convention as probe_gamepads(): the platform expects the raw input pointer.
+    return platf::supported_gamepads(static_cast<platf::input_t *>(platf_input.get()));
   }
 
   struct gamepad_t {
@@ -867,6 +910,7 @@ namespace input {
     }
 
     input->gamepads[packet->controllerNumber].id = id;
+    record_gamepad(id, packet->controllerNumber, arrival);
   }
 
   /**
@@ -1105,6 +1149,7 @@ namespace input {
       }
 
       gamepad.id = id;
+      record_gamepad(id, (uint8_t) packet->controllerNumber, {});
     } else if (!(packet->activeGamepadMask & (1 << packet->controllerNumber)) && gamepad.id >= 0) {
       // If this is the final event for a gamepad being removed, free the gamepad and return.
       free_gamepad(platf_input, gamepad.id);

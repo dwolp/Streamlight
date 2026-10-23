@@ -44,12 +44,22 @@
 #define SP_STICK_CENTER 2048
 #define SP_STICK_RANGE 1536
 
+// Raw IMU units with the factory calibration this controller reports (see switch_pro_protocol.c):
+// accelerometer 4096 per G, gyro 13371 / 936 (about 14.29) per degree per second.
+#define SP_ACCEL_PER_G 4096.0f
+#define SP_GYRO_PER_DPS (13371.0f / 936.0f)
+
 typedef struct sp_state {
   unsigned char buttons[3];
   unsigned short lx, ly, rx, ry;  // 12-bit; Y is "up = larger", as on the real controller
+
+  unsigned char id;           // controller slot; makes each controller's MAC address unique
+  unsigned char imu_enabled;  // set by the host with sub-command 0x40
+  short accel[3];             // raw accelerometer X, Y, Z in the controller's own axes
+  short gyro[3];              // raw gyro X, Y, Z in the controller's own axes
 } sp_state;
 
-// Sets all buttons released and both sticks centred.
+// Sets all buttons released, both sticks centred, IMU off with no data, and slot 0.
 void sp_state_init(sp_state *state);
 
 // Converts a signed axis value (-32768..32767, up/right positive) to the 12-bit stick range.
@@ -58,7 +68,14 @@ unsigned short sp_axis_to_stick(short value);
 // Builds a 0x30 full input report.
 void sp_build_full_report(const sp_state *state, unsigned char timer, unsigned char out[SP_REPORT_SIZE]);
 
-// Handles an output report. `payload` excludes the report ID. Returns 1 and fills `reply`
-// if the controller must answer with an input report, otherwise returns 0.
+// Handles an output report. `payload` excludes the report ID. Updates `state` where the host
+// changes it (IMU on/off). Returns 1 and fills `reply` if the controller must answer with an
+// input report, otherwise returns 0.
 int sp_handle_output(unsigned char report_id, const unsigned char *payload, unsigned long length,
-                     const sp_state *state, unsigned char timer, unsigned char reply[SP_REPORT_SIZE]);
+                     sp_state *state, unsigned char timer, unsigned char reply[SP_REPORT_SIZE]);
+
+// Reads the rumble strength carried by output report 0x01 or 0x10 (`payload` excludes the report
+// ID). Reports the strongest low-band and high-band amplitude of the two actuators as 0..0xFFFF.
+// Returns 1 if the report carries rumble data, otherwise 0.
+int sp_parse_rumble(unsigned char report_id, const unsigned char *payload, unsigned long length,
+                    unsigned short *low_frequency, unsigned short *high_frequency);

@@ -161,7 +161,95 @@ static void test_no_reply(void) {
   CHECK(!sp_handle_output(SP_OUTPUT_RUMBLE_SUBCMD, packet + 1, 5, &state, 0, reply));  // too short
 }
 
+static void test_rumble(void) {
+  unsigned char packet[SP_REPORT_SIZE] = {0};
+  unsigned short low = 1, high = 1;
+
+  // Neutral rumble (00 01 40 40 on both actuators) is silence.
+  static const unsigned char neutral[9] = {0x00, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
+  CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, neutral, sizeof(neutral), &low, &high));
+  CHECK(low == 0 && high == 0);
+
+  // Full high band on the left actuator only: high-band amplitude 100 (byte 1 = 0xC8).
+  static const unsigned char high_only[9] = {0x00, 0x00, 0xC8, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
+  CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, high_only, sizeof(high_only), &low, &high));
+  CHECK(low == 0 && high == 0xFFFF);
+
+  // Full low band on the right actuator only: (0x72 - 0x40) << 1 = 100.
+  static const unsigned char low_only[9] = {0x00, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x72};
+  CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, low_only, sizeof(low_only), &low, &high));
+  CHECK(low == 0xFFFF && high == 0);
+
+  // Half low band (50) on the left: (0x59 - 0x40) << 1 | 0 = 50.
+  static const unsigned char half[9] = {0x00, 0x00, 0x01, 0x40, 0x59, 0x00, 0x01, 0x40, 0x40};
+  CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, half, sizeof(half), &low, &high));
+  CHECK(low == 50 * 0xFFFF / 100);
+
+  // Sub-command reports carry rumble too.
+  packet[0] = 0x03;  // counter
+  memcpy(packet + 1, high_only + 1, 8);
+  CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE_SUBCMD, packet, 10, &low, &high) && high == 0xFFFF);
+
+  // Other reports and short reports do not.
+  CHECK(!sp_parse_rumble(SP_OUTPUT_USB, packet, 10, &low, &high));
+  CHECK(!sp_parse_rumble(SP_OUTPUT_RUMBLE, packet, 5, &low, &high));
+}
+
+static void test_unique_mac(void) {
+  unsigned char packet[SP_REPORT_SIZE] = {SP_OUTPUT_USB, 0x01};
+  unsigned char reply0[SP_REPORT_SIZE], reply1[SP_REPORT_SIZE];
+  sp_state first, second;
+
+  sp_state_init(&first);
+  sp_state_init(&second);
+  second.id = 1;
+
+  CHECK(sp_handle_output(packet[0], packet + 1, SP_REPORT_SIZE - 1, &first, 0, reply0));
+  CHECK(sp_handle_output(packet[0], packet + 1, SP_REPORT_SIZE - 1, &second, 0, reply1));
+  CHECK(reply0[4] == 0x01 && reply1[4] == 0x02);    // last MAC byte (sent first) differs by slot
+  CHECK(memcmp(reply0 + 5, reply1 + 5, 5) == 0);    // the rest is shared
+}
+
+static void test_imu(void) {
+  unsigned char packet[SP_REPORT_SIZE] = {SP_OUTPUT_RUMBLE_SUBCMD};
+  unsigned char report[SP_REPORT_SIZE], reply[SP_REPORT_SIZE];
+  sp_state state;
+
+  sp_state_init(&state);
+  state.accel[0] = 0x1234;
+  state.accel[1] = -2;
+  state.accel[2] = 4096;
+  state.gyro[2] = 300;
+
+  // IMU off: samples stay zero even with data.
+  sp_build_full_report(&state, 0, report);
+  CHECK(report[13] == 0 && report[14] == 0 && report[48] == 0);
+
+  // Sub-command 0x40 with 1 enables it.
+  packet[10] = 0x40;
+  packet[11] = 0x01;
+  CHECK(sp_handle_output(packet[0], packet + 1, SP_REPORT_SIZE - 1, &state, 0, reply) && reply[14] == 0x40);
+  CHECK(state.imu_enabled);
+
+  sp_build_full_report(&state, 0, report);
+  for (int sample = 0; sample < 3; sample++) {
+    const unsigned char *imu = report + 13 + sample * 12;
+    CHECK(imu[0] == 0x34 && imu[1] == 0x12);                 // accel X
+    CHECK((short) (imu[2] | (imu[3] << 8)) == -2);            // accel Y
+    CHECK((short) (imu[4] | (imu[5] << 8)) == 4096);          // accel Z
+    CHECK((short) (imu[10] | (imu[11] << 8)) == 300);         // gyro Z
+  }
+
+  // Sub-command 0x40 with 0 disables it again.
+  packet[11] = 0x00;
+  CHECK(sp_handle_output(packet[0], packet + 1, SP_REPORT_SIZE - 1, &state, 0, reply));
+  CHECK(!state.imu_enabled);
+}
+
 int main(void) {
+  test_unique_mac();
+  test_imu();
+  test_rumble();
   test_usb_commands();
   test_device_info();
   test_plain_ack();

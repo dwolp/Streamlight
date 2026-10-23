@@ -11,6 +11,8 @@ It is a personal fork of [Apollo](https://github.com/ClassicOldSong/Apollo), whi
 
 This fork is maintained for personal use. Contributions are not accepted.
 
+See [CHANGELOG.md](CHANGELOG.md) for what Streamlight changes compared to Apollo.
+
 ## Features
 
 - Built-in virtual display with HDR support that matches your client's resolution and framerate
@@ -19,6 +21,8 @@ This fork is maintained for personal use. Contributions are not accepted.
 - Commands that run on client connect and disconnect
 - Input-only mode
 - Web UI for configuration, app list management and client pairing
+- Nintendo Switch Pro Controller emulation on Windows, with its own driver (`src_driver/windows/virtual_pad`)
+- Input status in the web UI: installed gamepad drivers and connected controllers
 
 ## Notes
 

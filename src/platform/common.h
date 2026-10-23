@@ -822,6 +822,15 @@ namespace platf {
   void free_gamepad(input_t &input, int nr);
 
   /**
+   * @brief Get the type of virtual gamepad emulated for a gamepad slot.
+   * @details Call it from the input thread, like `alloc_gamepad()` and `free_gamepad()`.
+   * @param input The global input context.
+   * @param nr The gamepad index.
+   * @return The gamepad option name, as listed by `supported_gamepads()`, or an empty string if the slot has no virtual gamepad.
+   */
+  std::string_view gamepad_emulated_type(input_t &input, int nr);
+
+  /**
    * @brief Get the supported platform capabilities to advertise to the client.
    * @return Capability flags.
    */

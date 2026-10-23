@@ -21,6 +21,7 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "virtual_switch_pad.h"
 
 #ifdef __MINGW32__
 // DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
@@ -443,9 +444,11 @@ namespace platf {
   struct input_raw_t {
     ~input_raw_t() {
       delete vigem;
+      delete switch_pad;
     }
 
     vigem_t *vigem;
+    virtual_switch_pad_t *switch_pad;  // nullptr if Streamlight's Switch Pro driver isn't installed
 
     decltype(CreateSyntheticPointerDevice) *fnCreateSyntheticPointerDevice;
     decltype(InjectSyntheticPointerInput) *fnInjectSyntheticPointerInput;
@@ -460,6 +463,12 @@ namespace platf {
     if (raw.vigem->init()) {
       delete raw.vigem;
       raw.vigem = nullptr;
+    }
+
+    raw.switch_pad = new virtual_switch_pad_t {};
+    if (!raw.switch_pad->init()) {
+      delete raw.switch_pad;
+      raw.switch_pad = nullptr;
     }
 
     // Get pointers to virtual touch/pen input functions (Win10 1809+)
@@ -1175,6 +1184,23 @@ namespace platf {
   int alloc_gamepad(input_t &input, const gamepad_id_t &id, const gamepad_arrival_t &metadata, feedback_queue_t feedback_queue) {
     auto raw = (input_raw_t *) input.get();
 
+    // Nintendo Switch Pro Controller through Streamlight's own driver: selected manually, or
+    // automatically when the client reports a Nintendo controller. Doesn't need ViGEm.
+    const bool switch_manual = config::input.gamepad == "switch"sv;
+    if (raw->switch_pad && (switch_manual || (config::input.gamepad == "auto"sv && metadata.type == LI_CTYPE_NINTENDO))) {
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will be Nintendo Switch Pro controller ("sv
+                      << (switch_manual ? "manual selection"sv : "auto-selected by client-reported type"sv) << ')';
+      const bool has_motion = metadata.capabilities & (LI_CCAP_ACCEL | LI_CCAP_GYRO);
+      BOOST_LOG(info) << "Gamepad " << id.globalIndex << " client reports motion sensors: "sv << (has_motion ? "yes"sv : "no"sv)
+                      << ", rumble: "sv << ((metadata.capabilities & LI_CCAP_RUMBLE) ? "yes"sv : "no"sv);
+      if (raw->switch_pad->alloc(id.globalIndex, id.clientRelativeIndex, feedback_queue, has_motion) == 0) {
+        return 0;
+      }
+      BOOST_LOG(warning) << "Couldn't create the virtual Switch Pro controller for gamepad " << id.globalIndex << "; falling back to ViGEm"sv;
+    } else if (switch_manual) {
+      BOOST_LOG(warning) << "Nintendo Switch Pro emulation is selected, but Streamlight's Switch Pro driver isn't installed; falling back to ViGEm"sv;
+    }
+
     if (!raw->vigem) {
       return 0;
     }
@@ -1229,11 +1255,33 @@ namespace platf {
   void free_gamepad(input_t &input, int nr) {
     auto raw = (input_raw_t *) input.get();
 
+    if (raw->switch_pad && raw->switch_pad->owns(nr)) {
+      raw->switch_pad->free(nr);
+      return;
+    }
+
     if (!raw->vigem) {
       return;
     }
 
     raw->vigem->free_target(nr);
+  }
+
+  std::string_view gamepad_emulated_type(input_t &input, int nr) {
+    auto raw = (input_raw_t *) input.get();
+
+    if (raw->switch_pad && raw->switch_pad->owns(nr)) {
+      return "switch"sv;
+    }
+    if (!raw->vigem || nr < 0 || nr >= (int) raw->vigem->gamepads.size()) {
+      return {};
+    }
+
+    auto &gamepad = raw->vigem->gamepads[nr];
+    if (!gamepad.gp) {
+      return {};
+    }
+    return vigem_target_get_type(gamepad.gp.get()) == DualShock4Wired ? "ds4"sv : "x360"sv;
   }
 
   /**
@@ -1487,7 +1535,13 @@ namespace platf {
    * @param gamepad_state The gamepad button/axis state sent from the client.
    */
   void gamepad_update(input_t &input, int nr, const gamepad_state_t &gamepad_state) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+    if (raw->switch_pad && raw->switch_pad->owns(nr)) {
+      raw->switch_pad->update(nr, gamepad_state);
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1625,7 +1679,13 @@ namespace platf {
    * @param motion The motion event.
    */
   void gamepad_motion(input_t &input, const gamepad_motion_t &motion) {
-    auto vigem = ((input_raw_t *) input.get())->vigem;
+    auto raw = (input_raw_t *) input.get();
+    if (raw->switch_pad && raw->switch_pad->owns(motion.id.globalIndex)) {
+      raw->switch_pad->motion(motion.id.globalIndex, motion.motionType, motion.x, motion.y, motion.z);
+      return;
+    }
+
+    auto vigem = raw->vigem;
 
     // If there is no gamepad support
     if (!vigem) {
@@ -1731,6 +1791,7 @@ namespace platf {
         supported_gamepad_t {"auto", true, ""},
         supported_gamepad_t {"x360", false, ""},
         supported_gamepad_t {"ds4", false, ""},
+        supported_gamepad_t {"switch", false, ""},
       };
 
       return gps;
@@ -1740,11 +1801,15 @@ namespace platf {
     auto enabled = vigem != nullptr;
     auto reason = enabled ? "" : "gamepads.vigem-not-available";
 
+    auto switch_enabled = ((input_raw_t *) input)->switch_pad != nullptr;
+    auto switch_reason = switch_enabled ? "" : "gamepads.switch-driver-not-available";
+
     // ds4 == ps4
     static std::vector gps {
       supported_gamepad_t {"auto", true, reason},
       supported_gamepad_t {"x360", enabled, reason},
-      supported_gamepad_t {"ds4", enabled, reason}
+      supported_gamepad_t {"ds4", enabled, reason},
+      supported_gamepad_t {"switch", switch_enabled, switch_reason}
     };
 
     for (auto &[name, is_enabled, reason_disabled] : gps) {
@@ -1763,8 +1828,8 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
-    // We support controller touchpad input as long as we're not emulating X360
-    if (config::input.gamepad != "x360"sv) {
+    // We support controller touchpad input as long as we're not emulating X360 or a Switch Pro (no touchpad)
+    if (config::input.gamepad != "x360"sv && config::input.gamepad != "switch"sv) {
       caps |= platform_caps::controller_touch;
     }
 

@@ -826,9 +826,8 @@ namespace video {
       },
       {
         // SDR-specific options
-        {"profile"s, [](const config_t &cfg) {
-           if (cfg.profile == 66) return "baseline"s;
-           if (cfg.profile == 77) return "main"s;
+        // config_t has no H.264 profile field (clients don't request one), so always use High.
+        {"profile"s, [](const config_t &) {
            return "high"s;
          }},
       },
