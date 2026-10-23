@@ -49,11 +49,24 @@ if ($LASTEXITCODE -ne 0) { throw "signtool failed for the driver" }
 & $signtool sign /fd sha256 /sm /s My /sha1 $cert.Thumbprint (Join-Path $pkg "streamlight_virtual_pad.cat")
 if ($LASTEXITCODE -ne 0) { throw "signtool failed for the catalog" }
 
-# 4. Add the driver package to the driver store, then create the root device.
+# 4. Add the driver package to the driver store. /install also updates an existing controller.
 pnputil /add-driver (Join-Path $pkg "streamlight_virtual_pad.inf") /install
-if ($LASTEXITCODE -ne 0) { throw "pnputil failed" }
+# pnputil: 0 = success, 3010 = success but a restart is needed (the old driver was in use).
+$rebootNeeded = $LASTEXITCODE -eq 3010
+if ($LASTEXITCODE -ne 0 -and -not $rebootNeeded) { throw "pnputil failed with exit code $LASTEXITCODE" }
 
-& $devcon install (Join-Path $pkg "streamlight_virtual_pad.inf") $hardwareId
-if ($LASTEXITCODE -ne 0) { throw "devcon install failed" }
+# 5. Create the root device on first install. If it already exists, pnputil has updated it;
+# running "devcon install" again would add a second virtual controller.
+$existing = Get-PnpDevice -ErrorAction SilentlyContinue | Where-Object { $_.HardwareID -contains $hardwareId }
+if (-not $existing) {
+    & $devcon install (Join-Path $pkg "streamlight_virtual_pad.inf") $hardwareId
+    # devcon: 0 = success, 1 = success but a restart is needed, anything else = failure.
+    if ($LASTEXITCODE -eq 1) { $rebootNeeded = $true }
+    elseif ($LASTEXITCODE -ne 0) { throw "devcon failed with exit code $LASTEXITCODE" }
+}
 
-Write-Host "Installed. Open joy.cpl (Set up USB game controllers) to check the device."
+if ($rebootNeeded) {
+    Write-Host "Installed. Restart Windows to load the new driver."
+} else {
+    Write-Host "Installed. Open joy.cpl (Set up USB game controllers) to check the device."
+}

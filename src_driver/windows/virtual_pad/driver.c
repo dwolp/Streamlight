@@ -1,34 +1,25 @@
 /*
  * Streamlight virtual Switch Pro controller: KMDF driver with a VHF virtual HID device.
- * Step 1 - see driver.h.
+ * See driver.h.
  *
  * Lifecycle follows Microsoft's VHF guidance: the VHF device is created and started in
  * EvtDriverDeviceAdd and deleted (synchronously) in the device's cleanup callback.
  * The input timer runs only while the device is in D0.
+ *
+ * Output reports from the host are answered by switch_pro_protocol.c. Replies are queued and
+ * sent ahead of the regular 0x30 input reports, which are streamed like the real controller.
  */
 #include "driver.h"
 #include "switch_pro_descriptor.h"
 
-// Poll interval for submitting input reports, in milliseconds.
-#define STREAMLIGHT_PAD_POLL_MS 4
-
-// Test pattern: toggle button A once a second (250 ticks x 4 ms) so joy.cpl shows activity.
-#define STREAMLIGHT_PAD_TEST_TOGGLE_TICKS 250
+// Interval for input reports, in milliseconds. The real controller sends about every 8 ms over
+// USB; Windows timer resolution may stretch this. SDL re-sends "force USB" if nothing arrives
+// for 100 ms, so it must stay well below that.
+#define STREAMLIGHT_PAD_POLL_MS 8
 
 // Container ID shared by the device's HID child. Must stay stable across reboots.
 static const GUID g_streamlight_pad_container_id = {
     0x5e0d7c2a, 0x7b3e, 0x4d2a, {0x9f, 0x3c, 0x7a, 0x1e, 0x2b, 0x3c, 0x4d, 0x5e}};
-
-static VOID StreamlightPadResetState(PAD_STATE *state) {
-  RtlZeroMemory(state, sizeof(*state));
-  state->report[0] = STREAMLIGHT_PAD_REPORT_ID;
-
-  // Centre both sticks (0x8000 little endian).
-  for (int i = 4; i < STREAMLIGHT_PAD_REPORT_SIZE; i += 2) {
-    state->report[i] = 0x00;
-    state->report[i + 1] = 0x80;
-  }
-}
 
 // VHF calls this when the OS can take another input report. Because this callback is
 // registered, VHF does not buffer reports for us: we submit at most one per callback.
@@ -42,32 +33,58 @@ static VOID StreamlightPadReadyForNextRead(PVOID VhfClientContext) {
   KeReleaseSpinLock(&ctx->Lock, irql);
 }
 
-// Output reports (rumble, LEDs, subcommands) from the OS. Step 1 accepts and ignores them.
+// Output reports from the host: USB commands, sub-commands and rumble.
 static VOID StreamlightPadWriteReport(PVOID VhfClientContext, VHFOPERATIONHANDLE VhfOperationHandle, PVOID VhfOperationContext, PHID_XFER_PACKET HidTransferPacket) {
-  UNREFERENCED_PARAMETER(VhfClientContext);
   UNREFERENCED_PARAMETER(VhfOperationContext);
 
-  DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL, "Streamlight pad: output report 0x%02x (%lu bytes) ignored\n",
-             HidTransferPacket->reportId, HidTransferPacket->reportBufferLen);
+  WDFDEVICE device = (WDFDEVICE) VhfClientContext;
+  PDEVICE_CONTEXT ctx = GetDeviceContext(device);
+  const UCHAR reportId = HidTransferPacket->reportId;
+  const UCHAR *payload = HidTransferPacket->reportBuffer;
+  ULONG length = HidTransferPacket->reportBufferLen;
+  KIRQL irql;
+
+  // A full-size report includes the report ID as its first byte. Decide by length rather than
+  // by comparing the first byte: a sub-command's packet counter can equal its report ID.
+  if (length == SP_REPORT_SIZE) {
+    payload++;
+    length--;
+  }
+
+  KeAcquireSpinLock(&ctx->Lock, &irql);
+  if (ctx->ReplyCount < STREAMLIGHT_PAD_REPLY_SLOTS) {
+    ULONG slot = (ctx->ReplyHead + ctx->ReplyCount) % STREAMLIGHT_PAD_REPLY_SLOTS;
+    if (sp_handle_output(reportId, payload, length, &ctx->State, ctx->ReportTimer, ctx->Replies[slot])) {
+      ctx->ReplyCount++;
+    }
+  } else {
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "Streamlight pad: reply queue full, dropping reply to 0x%02x\n", reportId);
+  }
+  KeReleaseSpinLock(&ctx->Lock, irql);
+
   VhfAsyncOperationComplete(VhfOperationHandle, STATUS_SUCCESS);
 }
 
 VOID StreamlightPadTimer(WDFTIMER Timer) {
   WDFDEVICE device = (WDFDEVICE) WdfTimerGetParentObject(Timer);
   PDEVICE_CONTEXT ctx = GetDeviceContext(device);
-  PAD_STATE snapshot;
+  UCHAR report[SP_REPORT_SIZE];
   VHFHANDLE vhf = NULL;
   KIRQL irql;
 
   KeAcquireSpinLock(&ctx->Lock, &irql);
-  ctx->TickCount++;
-  if (ctx->TickCount % STREAMLIGHT_PAD_TEST_TOGGLE_TICKS == 0) {
-    ctx->State.report[1] ^= (1 << PAD_BUTTON_A);
-  }
   if (ctx->ReadyForNextRead && ctx->VhfHandle != NULL) {
     ctx->ReadyForNextRead = FALSE;
-    snapshot = ctx->State;
     vhf = ctx->VhfHandle;
+
+    if (ctx->ReplyCount > 0) {
+      RtlCopyMemory(report, ctx->Replies[ctx->ReplyHead], SP_REPORT_SIZE);
+      ctx->ReplyHead = (ctx->ReplyHead + 1) % STREAMLIGHT_PAD_REPLY_SLOTS;
+      ctx->ReplyCount--;
+    } else {
+      sp_build_full_report(&ctx->State, ctx->ReportTimer, report);
+    }
+    ctx->ReportTimer++;
   }
   KeReleaseSpinLock(&ctx->Lock, irql);
 
@@ -75,9 +92,9 @@ VOID StreamlightPadTimer(WDFTIMER Timer) {
     HID_XFER_PACKET packet;
     NTSTATUS status;
 
-    packet.reportBuffer = snapshot.report;
-    packet.reportBufferLen = sizeof(snapshot.report);
-    packet.reportId = STREAMLIGHT_PAD_REPORT_ID;
+    packet.reportBuffer = report;
+    packet.reportBufferLen = SP_REPORT_SIZE;
+    packet.reportId = report[0];
 
     status = VhfReadReportSubmit(vhf, &packet);
     if (!NT_SUCCESS(status)) {
@@ -173,7 +190,7 @@ NTSTATUS StreamlightPadDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
   // The context is zero-initialised by WDF; cleanup relies on VhfHandle being NULL until set.
   ctx = GetDeviceContext(device);
   KeInitializeSpinLock(&ctx->Lock);
-  StreamlightPadResetState(&ctx->State);
+  sp_state_init(&ctx->State);
 
   WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig, StreamlightPadTimer, STREAMLIGHT_PAD_POLL_MS);
   timerConfig.AutomaticSerialization = FALSE;

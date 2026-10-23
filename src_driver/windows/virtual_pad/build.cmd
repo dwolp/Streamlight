@@ -26,7 +26,7 @@ cl /nologo /kernel /c /W4 /WX /wd4324 /GS- /Zp8 /Gy ^
     /I"%WDK%\Include\%SDK%\km\crt" ^
     /I"%WDK%\Include\%SDK%\shared" ^
     /I"%WDK%\Include\wdf\kmdf\%KMDF%" ^
-    /Fo"%OUT%\driver.obj" "%HERE%driver.c" || exit /b 1
+    /Fo"%OUT%\\" "%HERE%driver.c" "%HERE%switch_pro_protocol.c" || exit /b 1
 
 cl /nologo /kernel /c /W4 /WX /GS- /Zp8 /Gy ^
     /D_AMD64_ /DAMD64 /D_WIN64 /DNTDDI_VERSION=0x0A000000 /D_WIN32_WINNT=0x0A00 ^
@@ -39,7 +39,7 @@ link /nologo /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:FxDriverEntry /NODEFAULTLIB 
     /MERGE:_TEXT=.text /MERGE:_PAGE=PAGE /OPT:REF /INCREMENTAL:NO ^
     /LIBPATH:"%WDK%\Lib\%SDK%\km\x64" ^
     /LIBPATH:"%WDK%\Lib\wdf\kmdf\x64\%KMDF%" ^
-    /OUT:"%OUT%\streamlight_virtual_pad.sys" "%OUT%\driver.obj" "%OUT%\security_cookie.obj" ^
+    /OUT:"%OUT%\streamlight_virtual_pad.sys" "%OUT%\driver.obj" "%OUT%\switch_pro_protocol.obj" "%OUT%\security_cookie.obj" ^
     ntoskrnl.lib hal.lib wdmsec.lib wdfldr.lib wdfdriverentry.lib vhfkm.lib || exit /b 1
 
 echo Built "%OUT%\streamlight_virtual_pad.sys"
