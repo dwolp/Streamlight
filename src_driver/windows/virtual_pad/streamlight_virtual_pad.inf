@@ -1,0 +1,55 @@
+;
+; Streamlight virtual Switch Pro controller (root-enumerated KMDF software device).
+; Install with devcon, which creates the root device node; see README.md.
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = HIDClass
+ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Provider    = %ProviderName%
+DriverVer   = 10/23/2026,1.0.0.0
+CatalogFile = streamlight_virtual_pad.cat
+
+[Manufacturer]
+%ProviderName% = Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc% = StreamlightPad_Install, Root\StreamlightVirtualPad
+
+[StreamlightPad_Install.NT]
+CopyFiles = Drivers_Dir
+
+[Drivers_Dir]
+streamlight_virtual_pad.sys
+
+[StreamlightPad_Install.NT.Services]
+AddService = StreamlightVirtualPad, 0x00000002, StreamlightPad_Service_Inst
+
+[StreamlightPad_Service_Inst]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %12%\streamlight_virtual_pad.sys
+
+[StreamlightPad_Install.NT.Wdf]
+KmdfService = StreamlightVirtualPad, StreamlightPad_wdfsect
+
+[StreamlightPad_wdfsect]
+KmdfLibraryVersion = 1.33
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+streamlight_virtual_pad.sys = 1
+
+[DestinationDirs]
+Drivers_Dir = 12
+
+[Strings]
+ProviderName = "Streamlight"
+DeviceDesc   = "Streamlight Virtual Nintendo Switch Pro Controller"
+ServiceDesc  = "Streamlight Virtual Gamepad Service"
+DiskName     = "Streamlight Virtual Gamepad Installation Disk"
