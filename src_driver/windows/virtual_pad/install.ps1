@@ -43,9 +43,10 @@ certutil -addstore -f TrustedPublisher $cerPath | Out-Null
 & $inf2cat /driver:$pkg /os:10_X64 /uselocaltime
 if ($LASTEXITCODE -ne 0) { throw "Inf2Cat failed" }
 
-& $signtool sign /fd sha256 /sha1 $cert.Thumbprint (Join-Path $pkg "streamlight_virtual_pad.sys")
+# /sm /s My: the certificate is in the machine store; signtool searches the user store by default.
+& $signtool sign /fd sha256 /sm /s My /sha1 $cert.Thumbprint (Join-Path $pkg "streamlight_virtual_pad.sys")
 if ($LASTEXITCODE -ne 0) { throw "signtool failed for the driver" }
-& $signtool sign /fd sha256 /sha1 $cert.Thumbprint (Join-Path $pkg "streamlight_virtual_pad.cat")
+& $signtool sign /fd sha256 /sm /s My /sha1 $cert.Thumbprint (Join-Path $pkg "streamlight_virtual_pad.cat")
 if ($LASTEXITCODE -ne 0) { throw "signtool failed for the catalog" }
 
 # 4. Add the driver package to the driver store, then create the root device.

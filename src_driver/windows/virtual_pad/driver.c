@@ -1,6 +1,10 @@
 /*
  * Streamlight virtual Switch Pro controller: KMDF driver with a VHF virtual HID device.
  * Step 1 - see driver.h.
+ *
+ * Lifecycle follows Microsoft's VHF guidance: the VHF device is created and started in
+ * EvtDriverDeviceAdd and deleted (synchronously) in the device's cleanup callback.
+ * The input timer runs only while the device is in D0.
  */
 #include "driver.h"
 #include "switch_pro_descriptor.h"
@@ -26,14 +30,16 @@ static VOID StreamlightPadResetState(PAD_STATE *state) {
   }
 }
 
-// VHF calls this when the OS can take another input report.
+// VHF calls this when the OS can take another input report. Because this callback is
+// registered, VHF does not buffer reports for us: we submit at most one per callback.
 static VOID StreamlightPadReadyForNextRead(PVOID VhfClientContext) {
   WDFDEVICE device = (WDFDEVICE) VhfClientContext;
   PDEVICE_CONTEXT ctx = GetDeviceContext(device);
+  KIRQL irql;
 
-  WdfSpinLockAcquire(ctx->Lock);
+  KeAcquireSpinLock(&ctx->Lock, &irql);
   ctx->ReadyForNextRead = TRUE;
-  WdfSpinLockRelease(ctx->Lock);
+  KeReleaseSpinLock(&ctx->Lock, irql);
 }
 
 // Output reports (rumble, LEDs, subcommands) from the OS. Step 1 accepts and ignores them.
@@ -50,9 +56,10 @@ VOID StreamlightPadTimer(WDFTIMER Timer) {
   WDFDEVICE device = (WDFDEVICE) WdfTimerGetParentObject(Timer);
   PDEVICE_CONTEXT ctx = GetDeviceContext(device);
   PAD_STATE snapshot;
-  BOOLEAN send = FALSE;
+  VHFHANDLE vhf = NULL;
+  KIRQL irql;
 
-  WdfSpinLockAcquire(ctx->Lock);
+  KeAcquireSpinLock(&ctx->Lock, &irql);
   ctx->TickCount++;
   if (ctx->TickCount % STREAMLIGHT_PAD_TEST_TOGGLE_TICKS == 0) {
     ctx->State.report[1] ^= (1 << PAD_BUTTON_A);
@@ -60,11 +67,11 @@ VOID StreamlightPadTimer(WDFTIMER Timer) {
   if (ctx->ReadyForNextRead && ctx->VhfHandle != NULL) {
     ctx->ReadyForNextRead = FALSE;
     snapshot = ctx->State;
-    send = TRUE;
+    vhf = ctx->VhfHandle;
   }
-  WdfSpinLockRelease(ctx->Lock);
+  KeReleaseSpinLock(&ctx->Lock, irql);
 
-  if (send) {
+  if (vhf != NULL) {
     HID_XFER_PACKET packet;
     NTSTATUS status;
 
@@ -72,7 +79,7 @@ VOID StreamlightPadTimer(WDFTIMER Timer) {
     packet.reportBufferLen = sizeof(snapshot.report);
     packet.reportId = STREAMLIGHT_PAD_REPORT_ID;
 
-    status = VhfReadReportSubmit(ctx->VhfHandle, &packet);
+    status = VhfReadReportSubmit(vhf, &packet);
     if (!NT_SUCCESS(status)) {
       DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "Streamlight pad: VhfReadReportSubmit failed 0x%08x\n", status);
     }
@@ -82,12 +89,42 @@ VOID StreamlightPadTimer(WDFTIMER Timer) {
 NTSTATUS StreamlightPadD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE PreviousState) {
   UNREFERENCED_PARAMETER(PreviousState);
 
-  PDEVICE_CONTEXT ctx = GetDeviceContext(Device);
+  WdfTimerStart(GetDeviceContext(Device)->Timer, WDF_REL_TIMEOUT_IN_MS(STREAMLIGHT_PAD_POLL_MS));
+  return STATUS_SUCCESS;
+}
+
+NTSTATUS StreamlightPadD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE TargetState) {
+  UNREFERENCED_PARAMETER(TargetState);
+
+  WdfTimerStop(GetDeviceContext(Device)->Timer, TRUE);
+  return STATUS_SUCCESS;
+}
+
+VOID StreamlightPadDeviceCleanup(WDFOBJECT DeviceObject) {
+  PDEVICE_CONTEXT ctx = GetDeviceContext((WDFDEVICE) DeviceObject);
+  VHFHANDLE vhf;
+  KIRQL irql;
+
+  // The timer is already stopped: the device always leaves D0 (StreamlightPadD0Exit) before
+  // cleanup, and it never started if device add failed. Child WDF objects such as the timer
+  // may already be cleaned up here, so only the context's own fields are used.
+  KeAcquireSpinLock(&ctx->Lock, &irql);
+  vhf = ctx->VhfHandle;
+  ctx->VhfHandle = NULL;
+  KeReleaseSpinLock(&ctx->Lock, irql);
+
+  if (vhf != NULL) {
+    VhfDelete(vhf, TRUE);
+  }
+}
+
+static NTSTATUS StreamlightPadCreateVhf(WDFDEVICE device, PDEVICE_CONTEXT ctx) {
   VHF_CONFIG config;
+  VHFHANDLE vhf;
   NTSTATUS status;
 
-  VHF_CONFIG_INIT(&config, WdfDeviceWdmGetDeviceObject(Device), sizeof(g_streamlight_pad_report_descriptor), (PUCHAR) g_streamlight_pad_report_descriptor);
-  config.VhfClientContext = Device;
+  VHF_CONFIG_INIT(&config, WdfDeviceWdmGetDeviceObject(device), sizeof(g_streamlight_pad_report_descriptor), (PUCHAR) g_streamlight_pad_report_descriptor);
+  config.VhfClientContext = device;
   config.VendorID = STREAMLIGHT_PAD_VID;
   config.ProductID = STREAMLIGHT_PAD_PID;
   config.VersionNumber = STREAMLIGHT_PAD_VERSION;
@@ -95,41 +132,20 @@ NTSTATUS StreamlightPadD0Entry(WDFDEVICE Device, WDF_POWER_DEVICE_STATE Previous
   config.EvtVhfReadyForNextReadReport = StreamlightPadReadyForNextRead;
   config.EvtVhfAsyncOperationWriteReport = StreamlightPadWriteReport;
 
-  status = VhfCreate(&config, &ctx->VhfHandle);
+  status = VhfCreate(&config, &vhf);
   if (!NT_SUCCESS(status)) {
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "Streamlight pad: VhfCreate failed 0x%08x\n", status);
     return status;
   }
 
-  status = VhfStart(ctx->VhfHandle);
+  // Publish the handle before starting, so the cleanup callback deletes it if VhfStart fails.
+  ctx->VhfHandle = vhf;
+
+  status = VhfStart(vhf);
   if (!NT_SUCCESS(status)) {
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "Streamlight pad: VhfStart failed 0x%08x\n", status);
-    VhfDelete(ctx->VhfHandle, TRUE);
-    ctx->VhfHandle = NULL;
-    return status;
   }
-
-  WdfSpinLockAcquire(ctx->Lock);
-  ctx->ReadyForNextRead = FALSE;
-  WdfSpinLockRelease(ctx->Lock);
-
-  WdfTimerStart(ctx->Timer, WDF_REL_TIMEOUT_IN_MS(STREAMLIGHT_PAD_POLL_MS));
-  return STATUS_SUCCESS;
-}
-
-NTSTATUS StreamlightPadD0Exit(WDFDEVICE Device, WDF_POWER_DEVICE_STATE TargetState) {
-  UNREFERENCED_PARAMETER(TargetState);
-
-  PDEVICE_CONTEXT ctx = GetDeviceContext(Device);
-
-  // Stop the timer first so it can't submit a report while the VHF device is being torn down.
-  WdfTimerStop(ctx->Timer, TRUE);
-
-  if (ctx->VhfHandle != NULL) {
-    VhfDelete(ctx->VhfHandle, TRUE);
-    ctx->VhfHandle = NULL;
-  }
-  return STATUS_SUCCESS;
+  return status;
 }
 
 NTSTATUS StreamlightPadDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
@@ -148,37 +164,32 @@ NTSTATUS StreamlightPadDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
   WdfDeviceInitSetPnpPowerEventCallbacks(DeviceInit, &pnpCallbacks);
 
   WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&attributes, DEVICE_CONTEXT);
+  attributes.EvtCleanupCallback = StreamlightPadDeviceCleanup;
   status = WdfDeviceCreate(&DeviceInit, &attributes, &device);
   if (!NT_SUCCESS(status)) {
     return status;
   }
 
+  // The context is zero-initialised by WDF; cleanup relies on VhfHandle being NULL until set.
   ctx = GetDeviceContext(device);
-  ctx->VhfHandle = NULL;
-  ctx->ReadyForNextRead = FALSE;
-  ctx->TickCount = 0;
+  KeInitializeSpinLock(&ctx->Lock);
   StreamlightPadResetState(&ctx->State);
-
-  WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-  attributes.ParentObject = device;
-  status = WdfSpinLockCreate(&attributes, &ctx->Lock);
-  if (!NT_SUCCESS(status)) {
-    return status;
-  }
 
   WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig, StreamlightPadTimer, STREAMLIGHT_PAD_POLL_MS);
   timerConfig.AutomaticSerialization = FALSE;
   WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
   attributes.ParentObject = device;
   status = WdfTimerCreate(&timerConfig, &attributes, &ctx->Timer);
-  return status;
+  if (!NT_SUCCESS(status)) {
+    return status;
+  }
+
+  return StreamlightPadCreateVhf(device, ctx);
 }
 
 NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath) {
   WDF_DRIVER_CONFIG config;
-  NTSTATUS status;
 
   WDF_DRIVER_CONFIG_INIT(&config, StreamlightPadDeviceAdd);
-  status = WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
-  return status;
+  return WdfDriverCreate(DriverObject, RegistryPath, WDF_NO_OBJECT_ATTRIBUTES, &config, WDF_NO_HANDLE);
 }

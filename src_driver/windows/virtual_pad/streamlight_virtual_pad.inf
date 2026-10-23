@@ -2,19 +2,24 @@
 ; Streamlight virtual Switch Pro controller (root-enumerated KMDF software device).
 ; Install with devcon, which creates the root device node; see README.md.
 ;
+; This device is the HID *source*; it is not a HID device itself. vhf.sys (loaded as a lower
+; filter below) creates the HID child, which Windows installs with its in-box HID drivers.
+;
 
 [Version]
 Signature   = "$Windows NT$"
-Class       = HIDClass
-ClassGuid   = {745a17a0-74d3-11d0-b6fe-00a0c90f57da}
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
 Provider    = %ProviderName%
 DriverVer   = 10/23/2026,1.0.0.0
 CatalogFile = streamlight_virtual_pad.cat
+PnpLockdown = 1
 
+; Windows 10 1709 (16299) or later: required for DIRID 13 (run from the driver store).
 [Manufacturer]
-%ProviderName% = Standard,NTamd64
+%ProviderName% = Standard,NTamd64.10.0...16299
 
-[Standard.NTamd64]
+[Standard.NTamd64.10.0...16299]
 %DeviceDesc% = StreamlightPad_Install, Root\StreamlightVirtualPad
 
 [StreamlightPad_Install.NT]
@@ -22,6 +27,13 @@ CopyFiles = Drivers_Dir
 
 [Drivers_Dir]
 streamlight_virtual_pad.sys
+
+; VHF must be a lower filter of the HID source driver, or VhfCreate fails.
+[StreamlightPad_Install.NT.HW]
+AddReg = StreamlightPad_HW_AddReg
+
+[StreamlightPad_HW_AddReg]
+HKR,,"LowerFilters",0x00010000,"vhf"
 
 [StreamlightPad_Install.NT.Services]
 AddService = StreamlightVirtualPad, 0x00000002, StreamlightPad_Service_Inst
@@ -31,7 +43,7 @@ DisplayName   = %ServiceDesc%
 ServiceType   = 1
 StartType     = 3
 ErrorControl  = 1
-ServiceBinary = %12%\streamlight_virtual_pad.sys
+ServiceBinary = %13%\streamlight_virtual_pad.sys
 
 [StreamlightPad_Install.NT.Wdf]
 KmdfService = StreamlightVirtualPad, StreamlightPad_wdfsect
@@ -45,8 +57,9 @@ KmdfLibraryVersion = 1.33
 [SourceDisksFiles]
 streamlight_virtual_pad.sys = 1
 
+; DIRID 13 runs the driver directly from the driver store.
 [DestinationDirs]
-Drivers_Dir = 12
+Drivers_Dir = 13
 
 [Strings]
 ProviderName = "Streamlight"

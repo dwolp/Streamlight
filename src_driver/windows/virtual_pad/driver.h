@@ -50,7 +50,8 @@ typedef struct _PAD_STATE {
 typedef struct _DEVICE_CONTEXT {
   VHFHANDLE VhfHandle;
   WDFTIMER Timer;
-  WDFSPINLOCK Lock;
+  // Plain spinlock in the context (not a WDF child object) so it stays valid during device cleanup.
+  KSPIN_LOCK Lock;
   PAD_STATE State;
   BOOLEAN ReadyForNextRead;
   ULONG TickCount;
@@ -61,6 +62,7 @@ WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, GetDeviceContext)
 DRIVER_INITIALIZE DriverEntry;
 
 EVT_WDF_DRIVER_DEVICE_ADD StreamlightPadDeviceAdd;
+EVT_WDF_OBJECT_CONTEXT_CLEANUP StreamlightPadDeviceCleanup;
 EVT_WDF_DEVICE_D0_ENTRY StreamlightPadD0Entry;
 EVT_WDF_DEVICE_D0_EXIT StreamlightPadD0Exit;
 EVT_WDF_TIMER StreamlightPadTimer;

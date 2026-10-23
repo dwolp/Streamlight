@@ -47,12 +47,15 @@ To remove it, run `.\uninstall.ps1` as administrator.
 - Motion and touch are not implemented.
 - The device identity is the Pro's USB ID, but the report layout is a generic gamepad with the Pro's report ID. Games and Steam may not recognize it as a Pro until step 2.
 
+## Verified so far
+
+- `build.cmd` compiles and links the driver with WDK 10.0.26100 and KMDF 1.33.
+- The INF passes the WDK's `infverif /w` (strict Windows Driver) check.
+- The driver follows Microsoft's VHF guidance: `vhf` is a lower filter in the INF, the VHF device is created in `EvtDriverDeviceAdd` and deleted in the device cleanup callback, and input reports are submitted only after `EvtVhfReadyForNextReadReport`.
+
 ## Not yet verified
 
-These steps haven't run on this machine:
-
-- Building and loading the driver. The build compiles and links, but nothing has been loaded.
-- The INF. `Class = HIDClass` and `KmdfLibraryVersion = 1.33` are my best reading of the WDK samples. A KMDF coinstaller may be needed.
-- The VHF device appearing in `joy.cpl`.
+- Loading the driver and the VHF device appearing in `joy.cpl`. Nothing has been installed yet.
+- `KmdfLibraryVersion = 1.33` assumes Windows ships KMDF 1.33 or later, which Windows 11 does. No coinstaller is included.
 
 A kernel-mode driver can crash the PC if it's wrong. Save your work before the first install.
