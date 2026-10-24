@@ -8,6 +8,20 @@ set "NEW_DIR=%OLD_DIR%\config"
 if not exist "%NEW_DIR%\" mkdir "%NEW_DIR%"
 icacls "%NEW_DIR%" /reset
 
+rem On first install, copy the configuration of an existing Apollo install, so the web UI login,
+rem paired clients, apps and covers carry over. It is copied, not moved, so Apollo keeps working.
+if exist "%NEW_DIR%\sunshine.conf" goto apollo_done
+set "APOLLO_DIR="
+for /f "tokens=2,*" %%a in ('reg query "HKLM\SOFTWARE\SudoMaker\Apollo" /ve /reg:64 2^>nul ^| findstr /C:"REG_SZ"') do set "APOLLO_DIR=%%b"
+if not defined APOLLO_DIR if defined ProgramW6432 set "APOLLO_DIR=%ProgramW6432%\Apollo"
+if not defined APOLLO_DIR set "APOLLO_DIR=%ProgramFiles%\Apollo"
+if /i "%APOLLO_DIR%"=="%OLD_DIR%" goto apollo_done
+if not exist "%APOLLO_DIR%\config\sunshine.conf" goto apollo_done
+echo Copying configuration from Apollo: %APOLLO_DIR%\config
+robocopy "%APOLLO_DIR%\config" "%NEW_DIR%" /E /COPY:DAT /R:1 /W:1 /NFL /NDL /NJH /NJS
+icacls "%NEW_DIR%" /reset /T
+:apollo_done
+
 rem Migrate all files that aren't already present in the config dir
 if exist "%OLD_DIR%\apps.json" (
     if not exist "%NEW_DIR%\apps.json" (

@@ -57,8 +57,8 @@ Streamlight can now present a controller to games on the host as a real Nintendo
   - Tighter spacing, with restyled cards, buttons, forms, tables and menus.
 - Home page:
   - The changelog of new releases is replaced by an "About Streamlight" section that describes what the app does.
-  - The update check is removed. The home page no longer contacts GitHub, and the version is shown as a small badge.
-  - Client downloads, resources and legal links are laid out in a grid.
+  - The update check is removed. The home page no longer contacts GitHub.
+  - The Clients box (client downloads), the Resources box (links to Apollo's discussions and wiki) and the version display are removed. The home page now shows the About section and the Legal links. The first-run welcome page no longer shows Resources either.
 - The "notify pre-releases" option is removed from the General settings, as it only applied to the update check.
 - Applications page: a more compact list and toolbar.
 - Configuration page: tabs are a single-row segmented control, and Save and Apply sit in a bar fixed to the bottom of the page.
@@ -67,6 +67,12 @@ Streamlight can now present a controller to games on the host as a real Nintendo
 ### Branding and documentation
 
 - User-visible branding renamed from Apollo to Streamlight.
+- Windows install renamed from Apollo to Streamlight:
+  - The installer is `Streamlight.exe`, installs to `C:\Program Files\Streamlight`, and shows as "Streamlight" in the Start menu and in Apps & features.
+  - The service is `StreamlightService` ("Streamlight Service"), and the tray icon tooltip says Streamlight.
+  - The firewall rules are named "Streamlight".
+  - The program itself is still `sunshine.exe`, with `tools\sunshinesvc.exe` as the service helper.
+- Moving over from Apollo on Windows: on first install, the installer copies the configuration of an existing Apollo install. That covers the web UI login, paired clients, apps, covers and settings. It also takes over the Apollo service's start type and removes the Apollo service, so the two don't compete for the same ports. Apollo's files are left in place, and its uninstaller can be run afterwards: answer "No" to removing the Virtual Gamepad and SudoVDA drivers, since Streamlight uses them too. Its firewall rules are named "Apollo", so they don't affect Streamlight's.
 - README rewritten for Streamlight as a personal fork, with a note that the fork was made with the help of Claude (Anthropic), that the changes have not been quality checked by a human, and that contributions are not accepted.
 
 ### Fixes

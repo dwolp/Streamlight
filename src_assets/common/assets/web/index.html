@@ -11,10 +11,7 @@
   <div id="content" class="container">
     <div class="page-header mt-4 mb-3">
       <h1 class="mb-1">{{ $t('index.welcome') }}</h1>
-      <p class="text-body-secondary mb-0">
-        {{ $t('index.description') }}
-        <span class="badge rounded-pill bg-body-tertiary text-body border ms-1 align-middle" v-if="version">Version {{ version }}</span>
-      </p>
+      <p class="text-body-secondary mb-0">{{ $t('index.description') }}</p>
     </div>
     <div class="alert alert-danger" v-if="fancyLogs.find(x => x.level === 'Fatal')">
       <div style="line-height: 32px;">
@@ -27,10 +24,8 @@
       </ul>
       <a class="btn btn-danger" href="./troubleshooting#logs">View Logs</a>
     </div>
-    <!-- Client downloads -->
-    <Client-Card></Client-Card>
     <!-- About -->
-    <div class="card mt-3">
+    <div class="card">
       <div class="card-body">
         <h2>About Streamlight</h2>
         <p class="text-body-secondary">
@@ -48,7 +43,7 @@
         </div>
       </div>
     </div>
-    <!-- Resources -->
+    <!-- Legal -->
     <div class="mt-3 mb-4">
       <Resource-Card></Resource-Card>
     </div>
@@ -59,19 +54,16 @@
   import { createApp } from 'vue'
   import { initApp } from './init'
   import Navbar from './Navbar.vue'
-  import ClientCard from './ClientCard.vue'
   import ResourceCard from './ResourceCard.vue'
 
   console.log("Hello, Streamlight!")
   let app = createApp({
     components: {
       Navbar,
-      ClientCard,
       ResourceCard
     },
     data() {
       return {
-        version: null,
         logs: null,
         aboutFeatures: [
           { icon: 'fas fa-display', title: 'Stream your desktop', text: 'Share the whole desktop or launch individual apps and games from your app list.' },
@@ -84,12 +76,6 @@
       }
     },
     async created() {
-      try {
-        let config = await fetch("./api/config").then((r) => r.json());
-        this.version = config.version;
-      } catch (e) {
-        console.error(e);
-      }
       try {
         this.logs = (await fetch("./api/logs").then(r => r.text()))
       } catch (e) {
