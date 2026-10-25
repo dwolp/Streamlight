@@ -222,9 +222,29 @@ static int sp_handle_subcommand(const unsigned char *payload, unsigned long leng
   return 1;
 }
 
-// Encoded amplitudes of one 4-byte HD rumble block, each 0..100 on the controller's own scale.
-// Byte 1 bits 1-7 hold the high-band amplitude; the low-band amplitude is (byte 3 - 0x40) << 1
-// with byte 2 bit 7 as its lowest bit. The neutral block 00 01 40 40 decodes to zero for both.
+// Rumble strength (0..0xFFFF) for each of the 101 encoded amplitude levels. Hosts encode a
+// strength as the first level whose value is at least that strength, so this table turns a level
+// back into the strength the host asked for. The scale is far from linear: level 50 is about a
+// third of full strength. Values from SDL's Switch driver (src/joystick/hidapi/SDL_hidapi_switch.c,
+// zlib licence), based on the amplitude table at
+// https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/rumble_data_table.md
+static const unsigned short sp_rumble_strength[101] = {
+    0, 514, 775, 921, 1096, 1303, 1550, 1843, 2192, 2606,
+    3100, 3686, 4383, 5213, 6199, 7372, 7698, 8039, 8395, 8767,
+    9155, 9560, 9984, 10426, 10887, 11369, 11873, 12398, 12947, 13520,
+    14119, 14744, 15067, 15397, 15734, 16079, 16431, 16790, 17158, 17534,
+    17918, 18310, 18711, 19121, 19540, 19967, 20405, 20851, 21308, 21775,
+    22251, 22739, 23236, 23745, 24265, 24797, 25340, 25894, 26462, 27041,
+    27633, 28238, 28856, 29488, 30134, 30794, 31468, 32157, 32861, 33581,
+    34316, 35068, 35836, 36620, 37422, 38242, 39079, 39935, 40809, 41703,
+    42616, 43549, 44503, 45477, 46473, 47491, 48531, 49593, 50679, 51789,
+    52923, 54082, 55266, 56476, 57713, 58977, 60268, 61588, 62936, 64315,
+    65535,
+};
+
+// Encoded amplitude levels (0..100) of one 4-byte HD rumble block. Byte 1 bits 1-7 hold the
+// high-band level; the low-band level is (byte 3 - 0x40) << 1 with byte 2 bit 7 as its lowest bit.
+// The neutral block 00 01 40 40 decodes to zero for both.
 static void sp_rumble_block(const unsigned char block[4], unsigned int *low, unsigned int *high) {
   unsigned int hi = block[1] >> 1;
   unsigned int lo = block[3] >= 0x40 ? ((unsigned int) (block[3] - 0x40) << 1) | (block[2] >> 7) : 0;
@@ -245,9 +265,8 @@ int sp_parse_rumble(unsigned char report_id, const unsigned char *payload, unsig
   sp_rumble_block(payload + 1, &left_low, &left_high);
   sp_rumble_block(payload + 5, &right_low, &right_high);
 
-  // The encoded scale is logarithmic; mapping it linearly is close enough for motor strength.
-  *low_frequency = (unsigned short) ((left_low > right_low ? left_low : right_low) * 0xFFFF / 100);
-  *high_frequency = (unsigned short) ((left_high > right_high ? left_high : right_high) * 0xFFFF / 100);
+  *low_frequency = sp_rumble_strength[left_low > right_low ? left_low : right_low];
+  *high_frequency = sp_rumble_strength[left_high > right_high ? left_high : right_high];
   return 1;
 }
 

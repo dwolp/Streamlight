@@ -9,11 +9,15 @@
 
 // standard includes
 #include <array>
+#include <atomic>
 #include <mutex>
+#include <shared_mutex>
+#include <string>
 #include <thread>
 
 // platform includes
 #include <Windows.h>
+#include <cfgmgr32.h>
 
 // local includes
 #include "src/platform/common.h"
@@ -80,12 +84,35 @@ namespace platf {
       std::array<std::int16_t, 3> gyro {};
     };
 
-    bool control(DWORD code, const void *in, DWORD in_size);
-    void rumble_thread_main();
+    // What the device notifications ask the worker thread to do.
+    enum class request_e {
+      none,
+      close,  ///< the driver is going away: close the handle so Windows can remove it
+      open,  ///< the driver is (back) available: open it if it isn't open
+    };
 
+    bool control(DWORD code, const void *in, DWORD in_size);
+    bool open_device();
+    void close_device();
+    void recreate_pads();
+    void worker_main();
+    void post_request(request_e request);
+
+    static DWORD CALLBACK on_interface_event(HCMNOTIFICATION notification, PVOID context, CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA data, DWORD size);
+    static DWORD CALLBACK on_device_event(HCMNOTIFICATION notification, PVOID context, CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA data, DWORD size);
+
+    // The control handle. Requests hold device_mutex shared while they use it; only the worker
+    // thread opens and closes it, holding the mutex exclusively.
+    std::shared_mutex device_mutex;
     HANDLE device = INVALID_HANDLE_VALUE;
+    HCMNOTIFICATION device_notification = nullptr;  // removal of the open driver device
+    HCMNOTIFICATION interface_notification = nullptr;  // the driver's interface (re)appearing
+
+    std::atomic<request_e> pending_request {request_e::none};
     HANDLE stop_event = nullptr;
-    std::thread rumble_thread;
+    HANDLE wake_event = nullptr;  // a request is pending
+    HANDLE closed_event = nullptr;  // the handle has been closed after a removal request
+    std::thread worker;
 
     std::mutex mutex;  // guards pads
     std::array<pad_t, MAX_GAMEPADS> pads;

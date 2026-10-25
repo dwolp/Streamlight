@@ -13,17 +13,43 @@
 #include "driver.h"
 #include "switch_pro_descriptor.h"
 
-// Interval for input reports, in milliseconds. The real controller sends about every 8 ms over
-// USB; Windows timer resolution may stretch this. SDL re-sends "force USB" if nothing arrives
-// for 100 ms, so it must stay well below that.
+// Interval for input reports, in milliseconds, matching the real controller over USB (125 Hz).
+// A high-resolution timer keeps it at 8 ms; the standard timer would stretch it to about 15.6 ms.
+// SDL re-sends "force USB" if nothing arrives for 100 ms, so it must stay well below that.
 #define STREAMLIGHT_PAD_POLL_MS 8
+
+// The real controller stops vibrating when rumble isn't refreshed, so hosts keep a rumble going
+// by resending it (SDL every 50 ms) and may end it by simply stopping. Rumble that hasn't been
+// refreshed for this long is treated as stopped. In 100 ns units (200 ms).
+#define STREAMLIGHT_PAD_RUMBLE_TIMEOUT (200 * 10000ULL)
+
+// A single rumble report that is never refreshed is a short pulse on the real controller. Steam
+// sends these as haptic clicks, for example on trigger presses. Until the host has refreshed a
+// rumble (another report within STREAMLIGHT_PAD_RUMBLE_REFRESH_WINDOW), it stops after this much
+// instead, which is still longer than SDL's 50 ms refresh. In 100 ns units (70 ms and 100 ms).
+#define STREAMLIGHT_PAD_RUMBLE_PULSE_TIMEOUT (70 * 10000ULL)
+#define STREAMLIGHT_PAD_RUMBLE_REFRESH_WINDOW (100 * 10000ULL)
+
+// Windows keeps up to 32 input reports per reader. A program that reads one report per frame
+// while the driver streams 125 per second always gets one from about a quarter of a second ago.
+// So the steady 8 ms stream is only kept while motion is actually flowing to a host that enabled
+// the IMU (SDL times gyro samples by the report interval). Otherwise a 0x30 report is sent when
+// the input changes, and when nothing changes only this often, to stay well inside SDL's 100 ms
+// "still connected" check. In 100 ns units (50 ms).
+#define STREAMLIGHT_PAD_IDLE_REPORT_INTERVAL (50 * 10000ULL)
+
+// If Streamlight stops sending motion (the client paused its sensors, or samples were lost), the
+// last gyro sample would otherwise repeat in every report and keep turning the camera in
+// gyro-aiming games. Gyro is zeroed when no sample has arrived for this long; the accelerometer
+// keeps its last value (gravity). In 100 ns units (100 ms).
+#define STREAMLIGHT_PAD_MOTION_TIMEOUT (100 * 10000ULL)
 
 // Container ID of the first controller; controller n adds n to the last byte. Must stay stable
 // across reboots.
 static const GUID g_streamlight_pad_container_id = {
     0x5e0d7c2a, 0x7b3e, 0x4d2a, {0x9f, 0x3c, 0x7a, 0x1e, 0x2b, 0x3c, 0x4d, 0x50}};
 
-static VOID StreamlightPadCompleteRumble(WDFREQUEST request, UCHAR index, USHORT low, USHORT high) {
+static VOID StreamlightPadCompleteRumble(WDFREQUEST request, UCHAR index, USHORT low, USHORT high, BOOLEAN timedOut) {
   SLPAD_RUMBLE *out;
   NTSTATUS status = WdfRequestRetrieveOutputBuffer(request, sizeof(*out), (PVOID *) &out, NULL);
 
@@ -31,6 +57,7 @@ static VOID StreamlightPadCompleteRumble(WDFREQUEST request, UCHAR index, USHORT
     out->index = index;
     out->low_frequency = low;
     out->high_frequency = high;
+    out->timed_out = timedOut ? 1 : 0;
     WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, sizeof(*out));
   } else {
     WdfRequestComplete(request, status);
@@ -42,6 +69,7 @@ static VOID StreamlightPadDeliverRumble(PDEVICE_CONTEXT ctx, PPAD pad) {
   WDFFILEOBJECT owner;
   WDFREQUEST request;
   BOOLEAN pending;
+  BOOLEAN timedOut = FALSE;
   USHORT low = 0, high = 0;
   KIRQL irql;
 
@@ -62,12 +90,13 @@ static VOID StreamlightPadDeliverRumble(PDEVICE_CONTEXT ctx, PPAD pad) {
   if (pending) {
     low = pad->RumbleLow;
     high = pad->RumbleHigh;
+    timedOut = pad->RumbleTimedOut;
     pad->RumblePending = FALSE;
   }
   KeReleaseSpinLock(&ctx->Lock, irql);
 
   if (pending) {
-    StreamlightPadCompleteRumble(request, pad->Index, low, high);
+    StreamlightPadCompleteRumble(request, pad->Index, low, high, timedOut);
   } else {
     // Another path took the rumble first; put the request back for the next one.
     WdfRequestRequeue(request);
@@ -116,11 +145,20 @@ static VOID StreamlightPadWriteReport(PVOID VhfClientContext, VHFOPERATIONHANDLE
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL, "Streamlight pad %u: reply queue full, dropping reply to 0x%02x\n", pad->Index, reportId);
   }
 
-  if (sp_parse_rumble(reportId, payload, length, &low, &high) && (low != pad->RumbleLow || high != pad->RumbleHigh)) {
-    pad->RumbleLow = low;
-    pad->RumbleHigh = high;
-    pad->RumblePending = TRUE;
-    rumbleChanged = TRUE;
+  if (sp_parse_rumble(reportId, payload, length, &low, &high)) {
+    // Every rumble report counts as a refresh, even if the strength is unchanged.
+    ULONGLONG now = KeQueryInterruptTime();
+    BOOLEAN active = low != 0 || high != 0;
+    pad->RumbleRefreshed = active && pad->HostRumbleActive && now - pad->LastRumbleTime <= STREAMLIGHT_PAD_RUMBLE_REFRESH_WINDOW;
+    pad->HostRumbleActive = active;
+    pad->LastRumbleTime = now;
+    if (low != pad->RumbleLow || high != pad->RumbleHigh) {
+      pad->RumbleLow = low;
+      pad->RumbleHigh = high;
+      pad->RumblePending = TRUE;
+      pad->RumbleTimedOut = FALSE;
+      rumbleChanged = TRUE;
+    }
   }
   KeReleaseSpinLock(&ctx->Lock, irql);
 
@@ -131,7 +169,8 @@ static VOID StreamlightPadWriteReport(PVOID VhfClientContext, VHFOPERATIONHANDLE
 }
 
 // Submits the next input report for a controller if the OS is ready for one: a queued reply
-// first, otherwise a 0x30 report with the current state.
+// first, otherwise a 0x30 report with the current state when one is due (see
+// STREAMLIGHT_PAD_IDLE_REPORT_INTERVAL).
 static VOID StreamlightPadPump(PPAD pad) {
   PDEVICE_CONTEXT ctx = GetDeviceContext(pad->Device);
   UCHAR report[SP_REPORT_SIZE];
@@ -144,17 +183,27 @@ static VOID StreamlightPadPump(PPAD pad) {
 
   KeAcquireSpinLock(&ctx->Lock, &irql);
   if (pad->Vhf != NULL && pad->ReadyForNextRead) {
-    pad->ReadyForNextRead = FALSE;
-    vhf = pad->Vhf;
+    const ULONGLONG now = KeQueryInterruptTime();
 
     if (pad->ReplyCount > 0) {
       RtlCopyMemory(report, pad->Replies[pad->ReplyHead], SP_REPORT_SIZE);
       pad->ReplyHead = (pad->ReplyHead + 1) % STREAMLIGHT_PAD_REPLY_SLOTS;
       pad->ReplyCount--;
-    } else {
+      vhf = pad->Vhf;
+    } else if (pad->StateChanged ||
+               (pad->State.imu_enabled && now - pad->LastMotionTime <= STREAMLIGHT_PAD_MOTION_TIMEOUT) ||
+               now - pad->LastReportTime >= STREAMLIGHT_PAD_IDLE_REPORT_INTERVAL) {
       sp_build_full_report(&pad->State, pad->ReportTimer, report);
+      pad->StateChanged = FALSE;
+      vhf = pad->Vhf;
     }
-    pad->ReportTimer++;
+
+    // Nothing due: stay ready, so the next change goes out at once.
+    if (vhf != NULL) {
+      pad->ReadyForNextRead = FALSE;
+      pad->ReportTimer++;
+      pad->LastReportTime = now;
+    }
   }
   KeReleaseSpinLock(&ctx->Lock, irql);
 
@@ -175,10 +224,47 @@ static VOID StreamlightPadPump(PPAD pad) {
   ExReleaseRundownProtection(&pad->Rundown);
 }
 
+// Stops a rumble that the host has stopped refreshing, like the real controller does.
+static VOID StreamlightPadExpireRumble(PDEVICE_CONTEXT ctx, PPAD pad) {
+  BOOLEAN expired = FALSE;
+  KIRQL irql;
+
+  KeAcquireSpinLock(&ctx->Lock, &irql);
+  if (pad->Vhf != NULL && (pad->RumbleLow != 0 || pad->RumbleHigh != 0) &&
+      KeQueryInterruptTime() - pad->LastRumbleTime >
+          (pad->RumbleRefreshed ? STREAMLIGHT_PAD_RUMBLE_TIMEOUT : STREAMLIGHT_PAD_RUMBLE_PULSE_TIMEOUT)) {
+    pad->RumbleLow = 0;
+    pad->RumbleHigh = 0;
+    pad->RumblePending = TRUE;
+    pad->RumbleTimedOut = TRUE;
+    expired = TRUE;
+  }
+  KeReleaseSpinLock(&ctx->Lock, irql);
+
+  if (expired) {
+    StreamlightPadDeliverRumble(ctx, pad);
+  }
+}
+
+// Zeroes a gyro sample that Streamlight has stopped refreshing.
+static VOID StreamlightPadExpireMotion(PDEVICE_CONTEXT ctx, PPAD pad) {
+  KIRQL irql;
+
+  KeAcquireSpinLock(&ctx->Lock, &irql);
+  if ((pad->State.gyro[0] != 0 || pad->State.gyro[1] != 0 || pad->State.gyro[2] != 0) &&
+      KeQueryInterruptTime() - pad->LastMotionTime > STREAMLIGHT_PAD_MOTION_TIMEOUT) {
+    RtlZeroMemory(pad->State.gyro, sizeof(pad->State.gyro));
+    pad->StateChanged = TRUE;
+  }
+  KeReleaseSpinLock(&ctx->Lock, irql);
+}
+
 VOID StreamlightPadTimer(WDFTIMER Timer) {
   PDEVICE_CONTEXT ctx = GetDeviceContext((WDFDEVICE) WdfTimerGetParentObject(Timer));
 
   for (int i = 0; i < SLPAD_MAX_PADS; i++) {
+    StreamlightPadExpireRumble(ctx, &ctx->Pads[i]);
+    StreamlightPadExpireMotion(ctx, &ctx->Pads[i]);
     StreamlightPadPump(&ctx->Pads[i]);
   }
 }
@@ -224,11 +310,18 @@ static NTSTATUS StreamlightPadCreate(PDEVICE_CONTEXT ctx, PPAD pad, WDFFILEOBJEC
   pad->State.id = pad->Index;  // gives each controller its own MAC address
   pad->ReadyForNextRead = FALSE;
   pad->ReportTimer = 0;
+  pad->StateChanged = TRUE;  // send the initial state as soon as the OS reads
+  pad->LastReportTime = 0;
   pad->ReplyHead = 0;
   pad->ReplyCount = 0;
   pad->RumbleLow = 0;
   pad->RumbleHigh = 0;
   pad->RumblePending = FALSE;
+  pad->RumbleTimedOut = FALSE;
+  pad->LastRumbleTime = 0;
+  pad->HostRumbleActive = FALSE;
+  pad->RumbleRefreshed = FALSE;
+  pad->LastMotionTime = 0;
   KeReleaseSpinLock(&ctx->Lock, irql);
 
   container.Data4[7] = (UCHAR) (container.Data4[7] + pad->Index);
@@ -249,7 +342,6 @@ static NTSTATUS StreamlightPadCreate(PDEVICE_CONTEXT ctx, PPAD pad, WDFFILEOBJEC
   status = VhfCreate(&config, &vhf);
   pad->LastCreateStatus = status;
   pad->LastStartStatus = 0;
-  pad->LastHandle = (ULONG) (ULONG_PTR) vhf;
   if (vhf == NULL) {
     if (NT_SUCCESS(status)) {
       status = STATUS_UNSUCCESSFUL;
@@ -277,6 +369,7 @@ static BOOLEAN StreamlightPadTryCompleteRumble(PDEVICE_CONTEXT ctx, WDFFILEOBJEC
   for (int i = 0; i < SLPAD_MAX_PADS; i++) {
     PPAD pad = &ctx->Pads[i];
     BOOLEAN pending;
+    BOOLEAN timedOut = FALSE;
     USHORT low = 0, high = 0;
     KIRQL irql;
 
@@ -285,12 +378,13 @@ static BOOLEAN StreamlightPadTryCompleteRumble(PDEVICE_CONTEXT ctx, WDFFILEOBJEC
     if (pending) {
       low = pad->RumbleLow;
       high = pad->RumbleHigh;
+      timedOut = pad->RumbleTimedOut;
       pad->RumblePending = FALSE;
     }
     KeReleaseSpinLock(&ctx->Lock, irql);
 
     if (pending) {
-      StreamlightPadCompleteRumble(request, pad->Index, low, high);
+      StreamlightPadCompleteRumble(request, pad->Index, low, high, timedOut);
       return TRUE;
     }
   }
@@ -330,13 +424,13 @@ VOID StreamlightPadIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request, size_t Ou
       WdfWaitLockRelease(ctx->ControlLock);
 
       // Diagnostics: optionally return the raw VhfCreate/VhfStart results of the last create.
-      if (IoControlCode == IOCTL_SLPAD_CREATE && OutputBufferLength >= 3 * sizeof(LONG)) {
+      // (Never the VHF handle: it is a kernel address and must not reach user mode.)
+      if (IoControlCode == IOCTL_SLPAD_CREATE && OutputBufferLength >= 2 * sizeof(LONG)) {
         LONG *diag;
-        if (NT_SUCCESS(WdfRequestRetrieveOutputBuffer(Request, 3 * sizeof(LONG), (PVOID *) &diag, NULL))) {
+        if (NT_SUCCESS(WdfRequestRetrieveOutputBuffer(Request, 2 * sizeof(LONG), (PVOID *) &diag, NULL))) {
           diag[0] = pad->LastCreateStatus;
           diag[1] = pad->LastStartStatus;
-          diag[2] = (LONG) pad->LastHandle;
-          WdfRequestCompleteWithInformation(Request, status, 3 * sizeof(LONG));
+          WdfRequestCompleteWithInformation(Request, status, 2 * sizeof(LONG));
           return;
         }
       }
@@ -364,6 +458,7 @@ VOID StreamlightPadIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request, size_t Ou
         pad->State.ly = in->ly & 0x0FFF;
         pad->State.rx = in->rx & 0x0FFF;
         pad->State.ry = in->ry & 0x0FFF;
+        pad->StateChanged = TRUE;
         status = STATUS_SUCCESS;
       } else {
         status = STATUS_DEVICE_NOT_CONNECTED;
@@ -395,6 +490,8 @@ VOID StreamlightPadIoDeviceControl(WDFQUEUE Queue, WDFREQUEST Request, size_t Ou
       if (pad->Vhf != NULL && pad->Owner == file) {
         RtlCopyMemory(pad->State.accel, in->accel, sizeof(pad->State.accel));
         RtlCopyMemory(pad->State.gyro, in->gyro, sizeof(pad->State.gyro));
+        pad->LastMotionTime = KeQueryInterruptTime();
+        pad->StateChanged = TRUE;
         status = STATUS_SUCCESS;
       } else {
         status = STATUS_DEVICE_NOT_CONNECTED;
@@ -533,6 +630,7 @@ NTSTATUS StreamlightPadDeviceAdd(WDFDRIVER Driver, PWDFDEVICE_INIT DeviceInit) {
 
   WDF_TIMER_CONFIG_INIT_PERIODIC(&timerConfig, StreamlightPadTimer, STREAMLIGHT_PAD_POLL_MS);
   timerConfig.AutomaticSerialization = FALSE;
+  timerConfig.UseHighResolutionTimer = WdfTrue;  // a true 8 ms period; see STREAMLIGHT_PAD_POLL_MS
   WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
   attributes.ParentObject = device;
   status = WdfTimerCreate(&timerConfig, &attributes, &ctx->Timer);

@@ -180,10 +180,11 @@ static void test_rumble(void) {
   CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, low_only, sizeof(low_only), &low, &high));
   CHECK(low == 0xFFFF && high == 0);
 
-  // Half low band (50) on the left: (0x59 - 0x40) << 1 | 0 = 50.
+  // Low band level 50 on the left: (0x59 - 0x40) << 1 | 0 = 50. The scale is not linear:
+  // level 50 is about a third of full strength, not half.
   static const unsigned char half[9] = {0x00, 0x00, 0x01, 0x40, 0x59, 0x00, 0x01, 0x40, 0x40};
   CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, half, sizeof(half), &low, &high));
-  CHECK(low == 50 * 0xFFFF / 100);
+  CHECK(low == 22251);
 
   // Sub-command reports carry rumble too.
   packet[0] = 0x03;  // counter
@@ -193,6 +194,44 @@ static void test_rumble(void) {
   // Other reports and short reports do not.
   CHECK(!sp_parse_rumble(SP_OUTPUT_USB, packet, 10, &low, &high));
   CHECK(!sp_parse_rumble(SP_OUTPUT_RUMBLE, packet, 5, &low, &high));
+}
+
+// Encodes every amplitude level the way SDL does (its fixed frequencies 0x74 high and 0x3D low)
+// and checks that decoding gives back SDL's strength for that level.
+static void test_rumble_levels(void) {
+  unsigned short previous = 0;
+
+  for (unsigned int level = 0; level <= 100; level++) {
+    unsigned char payload[9] = {0x00};
+    unsigned short low, high;
+
+    // Left actuator: high band (frequency 0x74, level in byte 1 bits 1-7) and low band
+    // (frequency 0x3D, level split over byte 2 bit 7 and byte 3).
+    payload[1] = 0x74;
+    payload[2] = (unsigned char) (level << 1);
+    payload[3] = (unsigned char) (0x3D | ((level & 1) << 7));
+    payload[4] = (unsigned char) (0x40 + (level >> 1));
+    // Right actuator neutral.
+    payload[5] = 0x00;
+    payload[6] = 0x01;
+    payload[7] = 0x40;
+    payload[8] = 0x40;
+
+    CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, payload, sizeof(payload), &low, &high));
+    CHECK(low == high);  // same level on both bands decodes to the same strength
+    CHECK(level == 0 || low > previous);  // strictly increasing
+    previous = low;
+  }
+
+  // Spot checks against SDL's table.
+  {
+    static const unsigned char level1[9] = {0x00, 0x74, 0x02, 0xBD, 0x40, 0x00, 0x01, 0x40, 0x40};
+    static const unsigned char level29[9] = {0x00, 0x74, 0x3A, 0xBD, 0x4E, 0x00, 0x01, 0x40, 0x40};
+    unsigned short low, high;
+
+    CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, level1, sizeof(level1), &low, &high) && low == 514 && high == 514);
+    CHECK(sp_parse_rumble(SP_OUTPUT_RUMBLE, level29, sizeof(level29), &low, &high) && low == 13520 && high == 13520);
+  }
 }
 
 static void test_unique_mac(void) {
@@ -247,6 +286,7 @@ static void test_imu(void) {
 }
 
 int main(void) {
+  test_rumble_levels();
   test_unique_mac();
   test_imu();
   test_rumble();

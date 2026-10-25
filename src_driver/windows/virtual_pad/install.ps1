@@ -19,6 +19,16 @@ $sys = Join-Path $here "build\streamlight_virtual_pad.sys"
 $inf = Join-Path $here "streamlight_virtual_pad.inf"
 $pkg = Join-Path $here "build\pkg"
 
+# Published names (oemNN.inf) of all Streamlight driver packages in the driver store.
+# pnputil lists "Published Name" before "Original Name" within each entry.
+function Get-StreamlightPackages {
+    $published = $null
+    foreach ($line in (pnputil /enum-drivers)) {
+        if ($line -match "Published Name\s*:\s*(oem\d+\.inf)") { $published = $Matches[1] }
+        if ($line -match "Original Name\s*:\s*streamlight_virtual_pad\.inf" -and $published) { $published }
+    }
+}
+
 foreach ($path in @($sys, $inf, $inf2cat, $signtool, $devcon)) {
     if (-not (Test-Path $path)) { throw "Missing: $path" }
 }
@@ -50,10 +60,13 @@ if ($LASTEXITCODE -ne 0) { throw "signtool failed for the driver" }
 if ($LASTEXITCODE -ne 0) { throw "signtool failed for the catalog" }
 
 # 4. Add the driver package to the driver store. /install also updates an existing controller.
-pnputil /add-driver (Join-Path $pkg "streamlight_virtual_pad.inf") /install
+$addOutput = pnputil /add-driver (Join-Path $pkg "streamlight_virtual_pad.inf") /install
+$addExit = $LASTEXITCODE
+$addOutput | Write-Host
 # pnputil: 0 = success, 3010 = success but a restart is needed (the old driver was in use).
-$rebootNeeded = $LASTEXITCODE -eq 3010
-if ($LASTEXITCODE -ne 0 -and -not $rebootNeeded) { throw "pnputil failed with exit code $LASTEXITCODE" }
+$rebootNeeded = $addExit -eq 3010
+if ($addExit -ne 0 -and -not $rebootNeeded) { throw "pnputil failed with exit code $addExit" }
+$newPackage = ($addOutput | Select-String -Pattern "Published Name:\s*(oem\d+\.inf)" | Select-Object -First 1).Matches.Groups[1].Value
 
 # 5. Create the root device on first install. If it already exists, pnputil has updated it;
 # running "devcon install" again would add a second virtual controller.
@@ -63,6 +76,16 @@ if (-not $existing) {
     # devcon: 0 = success, 1 = success but a restart is needed, anything else = failure.
     if ($LASTEXITCODE -eq 1) { $rebootNeeded = $true }
     elseif ($LASTEXITCODE -ne 0) { throw "devcon failed with exit code $LASTEXITCODE" }
+}
+
+# 6. Remove older Streamlight packages from the driver store, so updates don't pile up. A package
+# still in use (the old driver until the restart) can't be deleted and stays for the next install.
+# Skipped if the new package's name wasn't found in pnputil's (possibly localized) output.
+foreach ($package in $(if ($newPackage) { Get-StreamlightPackages } else { @() })) {
+    if ($package -ne $newPackage) {
+        pnputil /delete-driver $package | Out-Null
+        if ($LASTEXITCODE -eq 0) { Write-Host "Removed old driver package $package" }
+    }
 }
 
 if ($rebootNeeded) {

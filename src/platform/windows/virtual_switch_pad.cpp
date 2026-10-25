@@ -7,7 +7,6 @@
 // standard includes
 #include <algorithm>
 #include <cmath>
-#include <string>
 #include <vector>
 
 // platform includes
@@ -35,6 +34,19 @@ namespace platf {
     // How often the client should send each motion sensor, in Hz.
     constexpr std::uint16_t MOTION_REPORT_RATE = 100;
 
+    // ZL and ZR are digital on the Pro Controller. Analog triggers press them past XInput's own
+    // trigger threshold (XINPUT_GAMEPAD_TRIGGER_THRESHOLD), so a trigger resting slightly above
+    // zero doesn't hold the button down.
+    constexpr std::uint8_t TRIGGER_THRESHOLD = 30;
+
+    // How long a removal of the driver may wait for us to close our handle. An open handle
+    // would make Windows refuse the removal (and ask for a restart when updating the driver).
+    constexpr DWORD CLOSE_TIMEOUT_MS = 5000;
+
+    // While the driver is unavailable, how often to try opening it again, in addition to
+    // reacting to its interface reappearing.
+    constexpr DWORD REOPEN_INTERVAL_MS = 5000;
+
     /**
      * @brief Rounds and clamps a raw IMU value to the controller's 16-bit range.
      */
@@ -61,8 +73,8 @@ namespace platf {
 
     /**
      * @brief Converts the client's gamepad state to the Switch Pro Controller layout.
-     * @details Face buttons map by label (A to A, B to B, ...), and ZL/ZR are pressed by any
-     * trigger travel, matching Streamlight's Switch emulation on Linux (inputtino).
+     * @details Face buttons map by label (A to A, B to B, ...), matching Streamlight's Switch
+     * emulation on Linux (inputtino).
      */
     SLPAD_STATE to_switch_state(int nr, const gamepad_state_t &gamepad_state) {
       const auto flags = gamepad_state.buttonFlags;
@@ -75,7 +87,7 @@ namespace platf {
       if (flags & B) state.buttons[0] |= SP_BTN0_B;
       if (flags & A) state.buttons[0] |= SP_BTN0_A;
       if (flags & RIGHT_BUTTON) state.buttons[0] |= SP_BTN0_R;
-      if (gamepad_state.rt > 0) state.buttons[0] |= SP_BTN0_ZR;
+      if (gamepad_state.rt > TRIGGER_THRESHOLD) state.buttons[0] |= SP_BTN0_ZR;
 
       if (flags & BACK) state.buttons[1] |= SP_BTN1_MINUS;
       if (flags & START) state.buttons[1] |= SP_BTN1_PLUS;
@@ -89,7 +101,7 @@ namespace platf {
       if (flags & DPAD_RIGHT) state.buttons[2] |= SP_BTN2_RIGHT;
       if (flags & DPAD_LEFT) state.buttons[2] |= SP_BTN2_LEFT;
       if (flags & LEFT_BUTTON) state.buttons[2] |= SP_BTN2_L;
-      if (gamepad_state.lt > 0) state.buttons[2] |= SP_BTN2_ZL;
+      if (gamepad_state.lt > TRIGGER_THRESHOLD) state.buttons[2] |= SP_BTN2_ZL;
 
       state.lx = to_stick(gamepad_state.lsX);
       state.ly = to_stick(gamepad_state.lsY);
@@ -130,45 +142,188 @@ namespace platf {
   }  // namespace
 
   virtual_switch_pad_t::~virtual_switch_pad_t() {
-    if (rumble_thread.joinable()) {
+    if (worker.joinable()) {
       SetEvent(stop_event);
-      rumble_thread.join();
+      worker.join();
+    }
+    if (interface_notification) {
+      CM_Unregister_Notification(interface_notification);
     }
 
     // Closing the handle makes the driver remove every controller we created.
-    if (device != INVALID_HANDLE_VALUE) {
-      CloseHandle(device);
-    }
-    if (stop_event) {
-      CloseHandle(stop_event);
+    close_device();
+
+    for (auto event : {stop_event, wake_event, closed_event}) {
+      if (event) {
+        CloseHandle(event);
+      }
     }
   }
 
   bool virtual_switch_pad_t::init() {
-    auto path = find_control_interface();
-    if (path.empty()) {
+    if (find_control_interface().empty()) {
       BOOST_LOG(info) << "Streamlight virtual Switch Pro driver is not installed; Switch Pro emulation is unavailable"sv;
       return false;
     }
 
-    device = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-    if (device == INVALID_HANDLE_VALUE) {
-      BOOST_LOG(warning) << "Couldn't open the virtual Switch Pro driver ["sv << util::hex(GetLastError()).to_string_view() << ']';
-      return false;
-    }
-
     stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!stop_event) {
+    wake_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    closed_event = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+    if (!stop_event || !wake_event || !closed_event || !open_device()) {
       return false;
     }
 
-    rumble_thread = std::thread {&virtual_switch_pad_t::rumble_thread_main, this};
+    // Hear about the driver coming back after an update or restart.
+    CM_NOTIFY_FILTER filter {};
+    filter.cbSize = sizeof(filter);
+    filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE;
+    filter.u.DeviceInterface.ClassGuid = GUID_DEVINTERFACE_STREAMLIGHT_VIRTUAL_PAD;
+    if (CM_Register_Notification(&filter, this, on_interface_event, &interface_notification) != CR_SUCCESS) {
+      interface_notification = nullptr;
+      BOOST_LOG(warning) << "Couldn't watch for the virtual Switch Pro driver being reinstalled; restart Streamlight after updating it"sv;
+    }
+
+    worker = std::thread {&virtual_switch_pad_t::worker_main, this};
     BOOST_LOG(info) << "Streamlight virtual Switch Pro driver found"sv;
     return true;
   }
 
+  /**
+   * @brief Opens the driver and watches for its removal.
+   * @return `true` if the driver is open.
+   */
+  bool virtual_switch_pad_t::open_device() {
+    auto path = find_control_interface();
+    if (path.empty()) {
+      return false;
+    }
+
+    HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    if (handle == INVALID_HANDLE_VALUE) {
+      BOOST_LOG(warning) << "Couldn't open the virtual Switch Pro driver ["sv << util::hex(GetLastError()).to_string_view() << ']';
+      return false;
+    }
+
+    // Without this notification the open handle would block removing or updating the driver.
+    HCMNOTIFICATION notification = nullptr;
+    CM_NOTIFY_FILTER filter {};
+    filter.cbSize = sizeof(filter);
+    filter.FilterType = CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE;
+    filter.u.DeviceHandle.hTarget = handle;
+    if (CM_Register_Notification(&filter, this, on_device_event, &notification) != CR_SUCCESS) {
+      notification = nullptr;
+      BOOST_LOG(warning) << "Couldn't watch the virtual Switch Pro driver for removal; updating it will need a restart"sv;
+    }
+
+    std::unique_lock lock {device_mutex};
+    device = handle;
+    device_notification = notification;
+    return true;
+  }
+
+  /**
+   * @brief Closes the driver handle. The driver removes the controllers created through it.
+   * @details Called from the worker thread or the destructor, never from a notification
+   * callback: unregistering a notification waits for its callbacks to finish.
+   */
+  void virtual_switch_pad_t::close_device() {
+    HCMNOTIFICATION notification;
+    bool was_open;
+    {
+      std::unique_lock lock {device_mutex};
+      was_open = device != INVALID_HANDLE_VALUE;
+      if (was_open) {
+        CloseHandle(device);
+        device = INVALID_HANDLE_VALUE;
+      }
+      notification = device_notification;
+      device_notification = nullptr;
+    }
+
+    // Let a waiting removal request go ahead before unregistering its notification.
+    if (closed_event) {
+      SetEvent(closed_event);
+    }
+    if (notification) {
+      CM_Unregister_Notification(notification);
+    }
+
+    // The controllers are gone; don't leave a client controller rumbling.
+    if (was_open) {
+      std::lock_guard lock {mutex};
+      for (auto &pad : pads) {
+        if (pad.active && (pad.last_rumble.data.rumble.lowfreq || pad.last_rumble.data.rumble.highfreq)) {
+          pad.last_rumble = gamepad_feedback_msg_t::make_rumble(pad.client_relative_index, 0, 0);
+          pad.feedback_queue->raise(pad.last_rumble);
+        }
+      }
+    }
+  }
+
+  /**
+   * @brief Creates the controllers again for client gamepads that are still connected, after
+   * the driver has been reopened.
+   */
+  void virtual_switch_pad_t::recreate_pads() {
+    std::array<bool, MAX_GAMEPADS> active {};
+    {
+      std::lock_guard lock {mutex};
+      for (int nr = 0; nr < MAX_GAMEPADS; nr++) {
+        active[nr] = pads[nr].active;
+      }
+    }
+
+    for (int nr = 0; nr < MAX_GAMEPADS; nr++) {
+      if (!active[nr]) {
+        continue;
+      }
+
+      SLPAD_INDEX in {static_cast<unsigned char>(nr)};
+      if (control(IOCTL_SLPAD_CREATE, &in, sizeof(in))) {
+        BOOST_LOG(info) << "Recreated virtual Switch Pro controller for gamepad "sv << nr;
+        std::lock_guard lock {mutex};
+        pads[nr].last_rumble = {};
+      } else {
+        BOOST_LOG(warning) << "Couldn't recreate the virtual Switch Pro controller for gamepad "sv << nr;
+      }
+    }
+  }
+
+  void virtual_switch_pad_t::post_request(request_e request) {
+    pending_request = request;
+    SetEvent(wake_event);
+  }
+
+  DWORD CALLBACK virtual_switch_pad_t::on_interface_event(HCMNOTIFICATION, PVOID context, CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA, DWORD) {
+    if (action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL) {
+      static_cast<virtual_switch_pad_t *>(context)->post_request(request_e::open);
+    }
+    return ERROR_SUCCESS;
+  }
+
+  DWORD CALLBACK virtual_switch_pad_t::on_device_event(HCMNOTIFICATION, PVOID context, CM_NOTIFY_ACTION action, PCM_NOTIFY_EVENT_DATA, DWORD) {
+    auto self = static_cast<virtual_switch_pad_t *>(context);
+
+    switch (action) {
+      case CM_NOTIFY_ACTION_DEVICEQUERYREMOVE:
+        // Windows asks whether the driver may be removed (an update, or disabling it). Close our
+        // handle before answering, or the open handle would refuse the removal.
+        ResetEvent(self->closed_event);
+        self->post_request(request_e::close);
+        WaitForSingleObject(self->closed_event, CLOSE_TIMEOUT_MS);
+        break;
+      case CM_NOTIFY_ACTION_DEVICEREMOVEPENDING:
+      case CM_NOTIFY_ACTION_DEVICEREMOVECOMPLETE:
+        self->post_request(request_e::close);
+        break;
+      default:
+        break;
+    }
+    return ERROR_SUCCESS;
+  }
+
   int virtual_switch_pad_t::alloc(int nr, std::uint8_t client_relative_index, feedback_queue_t feedback_queue, bool has_motion) {
-    if (device == INVALID_HANDLE_VALUE || nr < 0 || nr >= MAX_GAMEPADS) {
+    if (nr < 0 || nr >= MAX_GAMEPADS) {
       return -1;
     }
 
@@ -253,9 +408,14 @@ namespace platf {
 
   /**
    * @brief Sends a control request to the driver and waits for it to finish.
-   * @return `true` on success.
+   * @return `true` on success; `false` if it failed or the driver isn't open.
    */
   bool virtual_switch_pad_t::control(DWORD code, const void *in, DWORD in_size) {
+    std::shared_lock lock {device_mutex};
+    if (device == INVALID_HANDLE_VALUE) {
+      return false;
+    }
+
     OVERLAPPED overlapped {};
     overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!overlapped.hEvent) {
@@ -268,7 +428,13 @@ namespace platf {
       ok = GetOverlappedResult(device, &overlapped, &bytes, TRUE);
     }
     if (!ok) {
-      BOOST_LOG(warning) << "Virtual Switch Pro request 0x"sv << util::hex(code).to_string_view() << " failed ["sv << util::hex(GetLastError()).to_string_view() << ']';
+      // State and motion updates are frequent; don't flood the log if the driver is going away.
+      const auto error = GetLastError();
+      if (code == IOCTL_SLPAD_SET_STATE || code == IOCTL_SLPAD_SET_MOTION) {
+        BOOST_LOG(debug) << "Virtual Switch Pro request 0x"sv << util::hex(code).to_string_view() << " failed ["sv << util::hex(error).to_string_view() << ']';
+      } else {
+        BOOST_LOG(warning) << "Virtual Switch Pro request 0x"sv << util::hex(code).to_string_view() << " failed ["sv << util::hex(error).to_string_view() << ']';
+      }
     }
 
     CloseHandle(overlapped.hEvent);
@@ -276,42 +442,76 @@ namespace platf {
   }
 
   /**
-   * @brief Waits for rumble from games and passes it back to the clients.
+   * @brief Waits for rumble from games and passes it back to the clients, and opens and closes
+   * the driver as it comes and goes.
    */
-  void virtual_switch_pad_t::rumble_thread_main() {
+  void virtual_switch_pad_t::worker_main() {
     HANDLE io_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!io_event) {
       return;
     }
 
     while (true) {
+      HANDLE handle;
+      {
+        std::shared_lock lock {device_mutex};
+        handle = device;
+      }
+
+      if (handle == INVALID_HANDLE_VALUE) {
+        // The driver is unavailable: wait for its interface to reappear, and retry now and then.
+        HANDLE handles[] {stop_event, wake_event};
+        if (WaitForMultipleObjects(2, handles, FALSE, REOPEN_INTERVAL_MS) == WAIT_OBJECT_0) {
+          break;
+        }
+        pending_request = request_e::none;
+        SetEvent(closed_event);  // already closed: don't keep a removal request waiting
+
+        if (open_device()) {
+          BOOST_LOG(info) << "Virtual Switch Pro driver is available again"sv;
+          recreate_pads();
+        }
+        continue;
+      }
+
+      // Only this thread closes the handle, so it can use it without holding the lock.
       SLPAD_RUMBLE rumble {};
       OVERLAPPED overlapped {};
       overlapped.hEvent = io_event;
       ResetEvent(io_event);
 
       DWORD bytes = 0;
-      BOOL ok = DeviceIoControl(device, IOCTL_SLPAD_GET_RUMBLE, nullptr, 0, &rumble, sizeof(rumble), &bytes, &overlapped);
+      BOOL ok = DeviceIoControl(handle, IOCTL_SLPAD_GET_RUMBLE, nullptr, 0, &rumble, sizeof(rumble), &bytes, &overlapped);
       if (!ok && GetLastError() == ERROR_IO_PENDING) {
-        HANDLE handles[] {stop_event, io_event};
-        if (WaitForMultipleObjects(2, handles, FALSE, INFINITE) == WAIT_OBJECT_0) {
-          CancelIoEx(device, &overlapped);
-          GetOverlappedResult(device, &overlapped, &bytes, TRUE);  // wait for the cancellation
-          break;
+        HANDLE handles[] {stop_event, wake_event, io_event};
+        auto wait = WaitForMultipleObjects(3, handles, FALSE, INFINITE);
+        if (wait != WAIT_OBJECT_0 + 2) {
+          CancelIoEx(handle, &overlapped);
+          GetOverlappedResult(handle, &overlapped, &bytes, TRUE);  // wait for the cancellation
+          if (wait == WAIT_OBJECT_0) {
+            break;
+          }
+
+          // A device notification.
+          if (pending_request.exchange(request_e::none) == request_e::close) {
+            BOOST_LOG(info) << "Virtual Switch Pro driver is being removed or updated; closing it"sv;
+            close_device();
+          }
+          continue;
         }
-        ok = GetOverlappedResult(device, &overlapped, &bytes, FALSE);
+        ok = GetOverlappedResult(handle, &overlapped, &bytes, FALSE);
       }
 
       if (!ok || bytes < sizeof(rumble)) {
-        // Don't spin if the driver keeps failing; retry after a pause unless we're stopping.
-        if (WaitForSingleObject(stop_event, 1000) == WAIT_OBJECT_0) {
-          break;
-        }
+        // The driver went away without notice, or failed: close it and wait for it to return.
+        BOOST_LOG(warning) << "Lost the virtual Switch Pro driver ["sv << util::hex(GetLastError()).to_string_view() << "]; waiting for it to return"sv;
+        close_device();
         continue;
       }
 
       BOOST_LOG(debug) << "Switch Pro rumble from game for gamepad "sv << static_cast<int>(rumble.index)
                        << ": low "sv << rumble.low_frequency << ", high "sv << rumble.high_frequency
+                       << (rumble.timed_out ? " (stopped by the driver: the game stopped refreshing it)"sv : ""sv)
                        << (config::input.forward_rumble ? ""sv : " (not forwarded: forward_rumble is off)"sv);
 
       // config::input.forward_rumble - Default is true so ignore rumble messages when false

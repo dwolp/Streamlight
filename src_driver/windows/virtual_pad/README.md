@@ -27,8 +27,9 @@ The root device exposes the interface `GUID_DEVINTERFACE_STREAMLIGHT_VIRTUAL_PAD
 
 - `IOCTL_SLPAD_CREATE` / `IOCTL_SLPAD_DESTROY` add or remove the controller in one of 16 slots. Each controller is its own VHF device. Only the handle that created a controller can remove it or change its state.
 - `IOCTL_SLPAD_SET_STATE` sets buttons (Switch layout) and 12-bit stick values. The change is sent to the OS right away when it is ready for a report.
-- `IOCTL_SLPAD_GET_RUMBLE` stays pending until a game changes the rumble on one of the handle's controllers.
-- Closing the handle removes all of its controllers.
+- `IOCTL_SLPAD_SET_MOTION` sets the latest raw accelerometer and gyro sample. The gyro is zeroed if no sample arrives for 100 ms; the accelerometer keeps its last value.
+- `IOCTL_SLPAD_GET_RUMBLE` stays pending until the rumble on one of the handle's controllers changes. It reports whether a stop came from the refresh timeout.
+- Closing the handle removes all of its controllers. Streamlight closes it when Windows asks to remove or update the driver, and reopens it and recreates its controllers when the driver is back.
 
 ## Protocol
 
@@ -37,9 +38,10 @@ The behaviour follows what SDL's HIDAPI Switch driver sends and checks (`src/joy
 - **USB commands (output `0x80`):** status (`0x01`) replies with controller type 3 (Pro) and a MAC address. Handshake (`0x02`) and high-speed (`0x03`) reply with `0x81`. Force USB (`0x04`) and the rest have no reply.
 - **Sub-commands (output `0x01`):** replied to with input report `0x21`, ACK byte at 13 and the echoed ID at 14. Device info (`0x02`) and SPI flash reads (`0x10`) return data. Everything else gets a plain ACK.
 - **SPI flash:** emulated with factory stick calibration (centre 2048, range ±1536), factory IMU calibration and colours. Unwritten areas read `0xFF`, so the host treats user calibration as absent.
-- **Input:** `0x30` reports are streamed about every 8 ms. Pending replies are sent ahead of them. SDL gives up on USB if nothing arrives for 100 ms.
-- **Rumble:** the HD rumble in output reports `0x01` and `0x10` is reduced to the strongest low-band and high-band amplitude of the two actuators. The encoded amplitude scale is logarithmic and is mapped linearly, which is an approximation.
-- **Not implemented:** motion (IMU data is zero), NFC/IR.
+- **Input:** `0x30` reports are streamed every 8 ms (125 per second, using a high-resolution timer), like the real controller. Pending replies are sent ahead of them. SDL gives up on USB if nothing arrives for 100 ms.
+- **Motion:** once the host enables the IMU (sub-command `0x40`), each report carries the latest motion sample three times; until then the IMU bytes are zero.
+- **Rumble:** the HD rumble in output reports `0x01` and `0x10` is reduced to the strongest low-band and high-band strength of the two actuators. Encoded amplitude levels are converted with SDL's table, so the strength matches what the host asked for. Like the real controller, rumble that isn't refreshed for 200 ms is treated as stopped. A single report that the host never refreshes (Steam's haptic clicks) stops after 70 ms.
+- **Not implemented:** NFC/IR, battery level (always reported as full and charging).
 
 ## Build and test
 
@@ -60,7 +62,7 @@ Test-signing must be on (`bcdedit /set testsigning on`, then reboot). From an el
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-If the driver is already installed, the script updates it instead of adding a second device. If it says a restart is needed, restart Windows.
+If the driver is already installed, the script updates it instead of adding a second device, and removes older Streamlight packages from the driver store. If it says a restart is needed, restart Windows.
 
 Without Streamlight running there is no controller. To check the driver on its own, start the control tool in one window:
 
@@ -76,7 +78,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests\test_device.ps1
 
 `test_device.ps1` expects neutral input, so its last check fails while `pad_control.exe` is moving the stick. That is expected.
 
-To remove the driver, run `uninstall.ps1` as administrator. The test certificate stays in the machine's trusted stores.
+`pad_control.exe [seconds] [slot] [motion seconds]` sends motion every 20 ms; stop it early (for example `pad_control.exe 10 0 3`) to check that the gyro drops to zero. `tests\test_rumble_timeout.ps1` sends one rumble report and stops, to check the rumble timeout; `pad_control.exe` prints the rumble it receives.
+
+To remove the driver, run `uninstall.ps1` as administrator. It removes every Streamlight package from the driver store. The test certificate stays in the machine's trusted stores.
 
 ## Status
 

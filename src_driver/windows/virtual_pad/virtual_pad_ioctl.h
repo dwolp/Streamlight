@@ -56,6 +56,7 @@ typedef struct _SLPAD_RUMBLE {
   unsigned char index;
   unsigned short low_frequency;   // 0 .. 0xFFFF, strongest low-band amplitude of both actuators
   unsigned short high_frequency;  // 0 .. 0xFFFF, strongest high-band amplitude of both actuators
+  unsigned char timed_out;        // 1 if the driver stopped the rumble because the game stopped refreshing it
 } SLPAD_RUMBLE;
 
 #pragma pack(pop)
