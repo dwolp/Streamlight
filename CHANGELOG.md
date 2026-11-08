@@ -2,6 +2,10 @@
 
 Changes in Streamlight compared to [Apollo](https://github.com/ClassicOldSong/Apollo), which it is forked from. For upstream Sunshine changes, see `docs/changelog.md`.
 
+## v1.0.0 (2026-11-08)
+
+The first release of Streamlight, with all the changes below (2026-10-24 and 2026-10-25). It includes Switch Pro driver 3.8.
+
 ## 2026-10-25
 
 ### Switch Pro Controller fixes (Windows driver 3.8)
